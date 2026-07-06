@@ -3,11 +3,46 @@ import { Book, Note, AppSettings, ReadingStats, MonthlyData } from '../types';
 
 const KEYS = {
   BOOKS: '@weread_books',
+  BOOKS_CHUNKS: '@weread_books_chunks',      // 书籍分片数
   NOTES: '@weread_notes',
+  NOTES_CHUNKS: '@weread_notes_chunks',       // 笔记分片数
   SETTINGS: '@weread_settings',
   STATS: '@weread_stats',
   MONTHLY_DATA: '@weread_monthly_data',
 };
+
+// 内存缓存，减少 AsyncStorage 重复读取
+let _notesCache: Note[] | null = null;
+let _booksCache: Book[] | null = null;
+let _cacheValid = false;
+
+// 每片最大字节数（避免单个 JSON 超过 SQLite 行限制 ~2MB）
+const MAX_CHUNK_BYTES = 1.5 * 1024 * 1024; // 1.5MB，留足余量
+// 单条笔记文本最大字符数
+const MAX_NOTE_TEXT_LENGTH = 10000;
+
+// 按 bookId 分片存储笔记，避免全量加载
+const NOTE_BOOK_PREFIX = '@weread_notes_book_';
+const NOTE_BOOK_INDEX_KEY = '@weread_notes_book_index';
+function noteBookChunkKey(bookId: string): string {
+  return `${NOTE_BOOK_PREFIX}${bookId}`;
+}
+
+async function getNoteBookIndex(): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(NOTE_BOOK_INDEX_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    console.warn('[Storage] 笔记 bookId 索引损坏，已重置');
+    return [];
+  }
+}
+
+async function saveNoteBookIndex(bookIds: string[]): Promise<void> {
+  const uniqueIds = Array.from(new Set(bookIds));
+  await AsyncStorage.setItem(NOTE_BOOK_INDEX_KEY, JSON.stringify(uniqueIds));
+}
 
 // ====== Default Settings ======
 
@@ -17,158 +52,397 @@ const defaultSettings: AppSettings = {
   sync: { autoSync: false, defaultKnowledgeBase: '' },
 };
 
-// ====== Books ======
+// ====== Books (chunked storage) ======
 
-export async function getBooks(): Promise<Book[]> {
-  const data = await AsyncStorage.getItem(KEYS.BOOKS);
-  return data ? JSON.parse(data) : [];
+/** 书籍分片 key */
+function bookChunkKey(index: number): string {
+  return `${KEYS.BOOKS}_${index}`;
+}
+
+/**
+ * 按序列化后字节大小将数组分片
+ */
+function chunkBySize<T>(items: T[], maxBytes: number): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentSize = 2; // '[' + ']' 的占位
+
+  for (const item of items) {
+    const itemJson = JSON.stringify(item);
+    const itemSize = itemJson.length; // JS string length ≈ UTF-16 chars; for ASCII this ≈ bytes
+    // 更精确：计算 UTF-8 字节数
+    const itemBytes = new Blob([itemJson]).size;
+    const commaSize = current.length > 0 ? 1 : 0;
+    const projectedSize = currentSize + commaSize + itemBytes;
+
+    if (projectedSize > maxBytes && current.length > 0) {
+      chunks.push(current);
+      current = [item];
+      currentSize = 2 + itemBytes;
+    } else {
+      current.push(item);
+      currentSize = projectedSize;
+    }
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  // 如果数组为空，保留一个空分片以保持 key 存在
+  if (chunks.length === 0) {
+    chunks.push([]);
+  }
+
+  return chunks;
 }
 
 export async function saveBooks(books: Book[]): Promise<void> {
-  await AsyncStorage.setItem(KEYS.BOOKS, JSON.stringify(books));
+  try {
+    const chunks = chunkBySize(books, MAX_CHUNK_BYTES);
+    const oldChunks = parseInt(await AsyncStorage.getItem(KEYS.BOOKS_CHUNKS) || '0', 10);
+
+    // 先写入新分片（保留旧分片作为回滚备份）
+    for (let i = 0; i < chunks.length; i++) {
+      await AsyncStorage.setItem(bookChunkKey(i), JSON.stringify(chunks[i]));
+    }
+
+    // 更新分片计数（此后读取端会使用新数据）
+    await AsyncStorage.setItem(KEYS.BOOKS_CHUNKS, String(chunks.length));
+
+    // 安全后再删除多余旧分片
+    for (let i = chunks.length; i < oldChunks; i++) {
+      await AsyncStorage.removeItem(bookChunkKey(i));
+    }
+
+    // 删除旧的单 key 格式（如果存在）
+    await AsyncStorage.removeItem(KEYS.BOOKS).catch(() => {});
+
+    // 更新缓存
+    _booksCache = books;
+  } catch (e) {
+    console.error('[Storage] 保存书籍失败:', e);
+    throw e;
+  }
+}
+
+export async function getBooks(): Promise<Book[]> {
+  if (_booksCache !== null) {
+    return _booksCache;
+  }
+
+  // 新格式（分片）
+  const chunksStr = await AsyncStorage.getItem(KEYS.BOOKS_CHUNKS);
+  if (chunksStr) {
+    const totalChunks = parseInt(chunksStr, 10);
+    if (totalChunks > 0) {
+      const allBooks: Book[] = [];
+      for (let i = 0; i < totalChunks; i++) {
+        const value = await AsyncStorage.getItem(bookChunkKey(i));
+        if (value) {
+          try { allBooks.push(...JSON.parse(value)); } catch (e) { console.error('[Storage] 书籍分片数据损坏:', bookChunkKey(i), e); }
+        }
+      }
+      _booksCache = allBooks;
+      return allBooks;
+    }
+  }
+
+  // 回退：旧格式（单 key）→ 读取并迁移；若 CursorWindow 溢出则清空
+  // 注意：AsyncStorage.getItem() 本身就可能因数据 >2MB 触发 CursorWindow，
+  // 所以必须把整个读旧 key 的路径包在 try-catch 里（不能只包 JSON.parse）
+  try {
+    const data = await AsyncStorage.getItem(KEYS.BOOKS);
+    if (data) {
+      const oldBooks: Book[] = JSON.parse(data);
+      if (oldBooks.length > 0) {
+        await saveBooks(oldBooks);
+      }
+      _booksCache = oldBooks;
+      return oldBooks;
+    }
+  } catch {
+    console.warn('[Storage] 旧格式书籍数据过大或损坏（CursorWindow），已清除');
+    await AsyncStorage.removeItem(KEYS.BOOKS).catch(() => {});
+  }
+
+  _booksCache = [];
+  return [];
 }
 
 export async function addBook(book: Book): Promise<void> {
-  const books = await getBooks();
-  books.push(book);
-  await saveBooks(books);
+  try {
+    const books = await getBooks();
+    books.push(book);
+    await saveBooks(books);
+  } catch (e) {
+    console.error('[Storage] 添加书籍失败:', e);
+    throw new Error('添加书籍失败');
+  }
 }
 
 export async function updateBook(updated: Book): Promise<void> {
-  const books = await getBooks();
-  const index = books.findIndex(b => b.id === updated.id);
-  if (index !== -1) {
-    books[index] = updated;
-    await saveBooks(books);
+  try {
+    const books = await getBooks();
+    const index = books.findIndex(b => b.id === updated.id);
+    if (index !== -1) {
+      books[index] = updated;
+      await saveBooks(books);
+    }
+  } catch (e) {
+    console.error('[Storage] 更新书籍失败:', e);
+    throw new Error('更新书籍失败');
+  }
+}
+
+/** 更新指定书籍的笔记数量（持久化到 AsyncStorage） */
+export async function updateBookNoteCount(bookId: string, noteCount: number): Promise<void> {
+  try {
+    const books = await getBooks();
+    const book = books.find(b => b.id === bookId);
+    if (book) {
+      book.noteCount = noteCount;
+      await saveBooks(books);
+    }
+  } catch (e) {
+    console.error('[Storage] 更新书籍笔记数量失败:', e);
+    throw new Error('更新书籍笔记数量失败');
   }
 }
 
 export async function deleteBooks(ids: string[]): Promise<void> {
-  const books = await getBooks();
-  await saveBooks(books.filter(b => !ids.includes(b.id)));
-  // Also delete related notes
-  const notes = await getNotes();
-  await saveNotes(notes.filter(n => !ids.includes(n.bookId)));
+  try {
+    const books = await getBooks();
+    const notes = await getNotes();
+    const newBooks = books.filter(b => !ids.includes(b.id));
+    const newNotes = notes.filter(n => !ids.includes(n.bookId));
+
+    // 先保存笔记（依赖数据），再保存书籍，确保失败时至少不会留下孤儿笔记
+    await saveNotes(newNotes);
+    await saveBooks(newBooks);
+  } catch (e) {
+    console.error('[Storage] deleteBooks 失败，数据可能未一致:', e);
+    throw new Error('删除书籍失败：数据未完全更新，请重试');
+  }
 }
 
-// ====== Notes ======
+// ====== Notes (chunked storage to avoid SQLite CursorWindow limit) ======
 
+/** 截断超长笔记文本 */
+function truncateNoteText(text: string): string {
+  if (text.length <= MAX_NOTE_TEXT_LENGTH) return text;
+  return text.slice(0, MAX_NOTE_TEXT_LENGTH) + '…[内容过长已截断]';
+}
+
+/** 笔记分片 key */
+function noteChunkKey(index: number): string {
+  return `${KEYS.NOTES}_${index}`;
+}
+
+/** 保存笔记（自动按字节大小分片） */
+export async function saveNotes(notes: Note[]): Promise<void> {
+  try {
+    // 截断超长文本
+    const safeNotes = notes.map(n => ({ ...n, text: truncateNoteText(n.text) }));
+
+    // 同步更新按 bookId 分片缓存
+    const oldBookIds = await getNoteBookIndex();
+    const bookNotesMap = new Map<string, Note[]>();
+    for (const n of safeNotes) {
+      if (!bookNotesMap.has(n.bookId)) bookNotesMap.set(n.bookId, []);
+      bookNotesMap.get(n.bookId)!.push(n);
+    }
+    const nextBookIds = Array.from(bookNotesMap.keys());
+    for (const [bookId, bookNotes] of bookNotesMap) {
+      await AsyncStorage.setItem(noteBookChunkKey(bookId), JSON.stringify(bookNotes));
+    }
+    for (const oldBookId of oldBookIds) {
+      if (!bookNotesMap.has(oldBookId)) {
+        await AsyncStorage.removeItem(noteBookChunkKey(oldBookId));
+      }
+    }
+    await saveNoteBookIndex(nextBookIds);
+
+    const chunks = chunkBySize(safeNotes, MAX_CHUNK_BYTES);
+    const oldChunks = parseInt(await AsyncStorage.getItem(KEYS.NOTES_CHUNKS) || '0', 10);
+
+    // 先写入新分片（保留旧分片作为回滚备份）
+    for (let i = 0; i < chunks.length; i++) {
+      await AsyncStorage.setItem(noteChunkKey(i), JSON.stringify(chunks[i]));
+    }
+
+    // 更新分片计数
+    await AsyncStorage.setItem(KEYS.NOTES_CHUNKS, String(chunks.length));
+
+    // 安全后再删除多余旧分片
+    for (let i = chunks.length; i < oldChunks; i++) {
+      await AsyncStorage.removeItem(noteChunkKey(i));
+    }
+
+    // 更新缓存
+    _notesCache = safeNotes;
+    _cacheValid = true;
+  } catch (e) {
+    console.error('[Storage] 保存笔记失败:', e);
+    throw e;
+  }
+}
+
+/** 读取全部笔记（合并所有分片） */
 export async function getNotes(): Promise<Note[]> {
-  const data = await AsyncStorage.getItem(KEYS.NOTES);
-  return data ? JSON.parse(data) : [];
+  if (_cacheValid && _notesCache !== null) {
+    return _notesCache;
+  }
+
+  // 尝试新格式（分片）
+  const chunksStr = await AsyncStorage.getItem(KEYS.NOTES_CHUNKS);
+  if (chunksStr) {
+    const totalChunks = parseInt(chunksStr, 10);
+    if (totalChunks > 0) {
+      const allNotes: Note[] = [];
+      for (let i = 0; i < totalChunks; i++) {
+        const value = await AsyncStorage.getItem(noteChunkKey(i));
+        if (value) {
+          try {
+            allNotes.push(...JSON.parse(value));
+          } catch (e) {
+            console.error('[Storage] 笔记分片数据损坏:', noteChunkKey(i), e);
+          }
+        }
+      }
+      _notesCache = allNotes;
+      _cacheValid = true;
+      return allNotes;
+    }
+  }
+
+  // 回退：旧格式（单 key）
+  // 注意：AsyncStorage.getItem() 本身就可能因数据 >2MB 触发 CursorWindow
+  try {
+    const data = await AsyncStorage.getItem(KEYS.NOTES);
+    if (data) {
+      const oldNotes: Note[] = JSON.parse(data);
+      // 迁移到新格式
+      if (oldNotes.length > 0) {
+        await saveNotes(oldNotes);
+        // 删除旧 key 避免下次再读
+        await AsyncStorage.removeItem(KEYS.NOTES);
+      }
+      _notesCache = oldNotes;
+      _cacheValid = true;
+      return oldNotes;
+    }
+  } catch {
+    // 旧数据损坏或过大（CursorWindow），删除旧 key 并返回空
+    console.warn('[Storage] 旧格式笔记数据过大或损坏（CursorWindow），已清除');
+    await AsyncStorage.removeItem(KEYS.NOTES).catch(() => {});
+  }
+
+  _notesCache = [];
+  _cacheValid = true;
+  return [];
 }
 
 export async function getNotesByBookId(bookId: string): Promise<Note[]> {
-  const notes = await getNotes();
-  return notes.filter(n => n.bookId === bookId);
-}
-
-export async function saveNotes(notes: Note[]): Promise<void> {
-  await AsyncStorage.setItem(KEYS.NOTES, JSON.stringify(notes));
+  // 优先从按 bookId 分片的 key 读取
+  try {
+    const raw = await AsyncStorage.getItem(noteBookChunkKey(bookId));
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // fall through to full scan
+  }
+  // 回退：全量加载并过滤
+  const allNotes = await getNotes();
+  const bookNotes = allNotes.filter(n => n.bookId === bookId);
+  // 异步写入分片 key 以供下次快速读取
+  AsyncStorage.setItem(noteBookChunkKey(bookId), JSON.stringify(bookNotes)).catch(() => {});
+  return bookNotes;
 }
 
 export async function addNote(note: Note): Promise<void> {
-  const notes = await getNotes();
-  notes.push(note);
-  await saveNotes(notes);
+  try {
+    const notes = await getNotes();
+    notes.push(note);
+    await saveNotes(notes);
+  } catch (e) {
+    console.error('[Storage] 添加笔记失败:', e);
+    throw new Error('添加笔记失败');
+  }
 }
 
 export async function deleteNotes(ids: string[]): Promise<void> {
-  const notes = await getNotes();
-  await saveNotes(notes.filter(n => !ids.includes(n.id)));
+  try {
+    const notes = await getNotes();
+    await saveNotes(notes.filter(n => !ids.includes(n.id)));
+  } catch (e) {
+    console.error('[Storage] 删除笔记失败:', e);
+    throw new Error('删除笔记失败');
+  }
 }
 
 // ====== Settings ======
 
 export async function getSettings(): Promise<AppSettings> {
-  const data = await AsyncStorage.getItem(KEYS.SETTINGS);
-  return data ? { ...defaultSettings, ...JSON.parse(data) } : defaultSettings;
+  try {
+    const data = await AsyncStorage.getItem(KEYS.SETTINGS);
+    if (!data) return defaultSettings;
+    const parsed = JSON.parse(data);
+    return {
+      weread: { ...defaultSettings.weread, ...(parsed.weread || {}) },
+      ima: { ...defaultSettings.ima, ...(parsed.ima || {}) },
+      sync: { ...defaultSettings.sync, ...(parsed.sync || {}) },
+    };
+  } catch {
+    console.warn('[Storage] 设置数据损坏，使用默认值');
+    return defaultSettings;
+  }
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
-  await AsyncStorage.setItem(KEYS.SETTINGS, JSON.stringify(settings));
+  try {
+    await AsyncStorage.setItem(KEYS.SETTINGS, JSON.stringify(settings));
+  } catch (e) {
+    console.error('[Storage] 保存设置失败:', e);
+    throw new Error('保存设置失败');
+  }
 }
 
 // ====== Stats ======
 
 export async function getStats(): Promise<ReadingStats | null> {
-  const data = await AsyncStorage.getItem(KEYS.STATS);
-  return data ? JSON.parse(data) : null;
+  try {
+    const data = await AsyncStorage.getItem(KEYS.STATS);
+    return data ? JSON.parse(data) : null;
+  } catch {
+    console.warn('[Storage] 统计数据损坏');
+    return null;
+  }
 }
 
 export async function saveStats(stats: ReadingStats): Promise<void> {
-  await AsyncStorage.setItem(KEYS.STATS, JSON.stringify(stats));
+  try {
+    await AsyncStorage.setItem(KEYS.STATS, JSON.stringify(stats));
+  } catch (e) {
+    console.error('[Storage] 保存统计数据失败:', e);
+    throw new Error('保存统计数据失败');
+  }
 }
 
 export async function getMonthlyData(): Promise<MonthlyData[]> {
-  const data = await AsyncStorage.getItem(KEYS.MONTHLY_DATA);
-  return data ? JSON.parse(data) : [];
+  try {
+    const data = await AsyncStorage.getItem(KEYS.MONTHLY_DATA);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    console.warn('[Storage] 月度数据损坏');
+    return [];
+  }
 }
 
 export async function saveMonthlyData(data: MonthlyData[]): Promise<void> {
-  await AsyncStorage.setItem(KEYS.MONTHLY_DATA, JSON.stringify(data));
-}
-
-// ====== Seed Demo Data ======
-
-export async function seedDemoData(): Promise<void> {
-  const existingBooks = await getBooks();
-  if (existingBooks.length > 0) return; // Already seeded
-
-  const now = new Date().toISOString();
-
-  const books: Book[] = [
-    { id: 'b1', title: '深度学习', author: 'Ian Goodfellow', coverColor: '#1A4B6B,#0A84FF,#5AC8FA', status: 'reading', noteCount: 42, rating: 5, lastReadDate: '2024-04-27', createdAt: now, updatedAt: now },
-    { id: 'b2', title: '算法导论', author: 'Thomas Cormen', coverColor: '#7C3AED,#A78BFA,#C4B5FD', status: 'reading', noteCount: 35, rating: 4, lastReadDate: '2024-04-26', createdAt: now, updatedAt: now },
-    { id: 'b3', title: '设计模式', author: 'Erich Gamma', coverColor: '#059669,#34D399,#6EE7B7', status: 'reading', noteCount: 28, rating: 3, lastReadDate: '2024-04-24', createdAt: now, updatedAt: now },
-    { id: 'b4', title: '人月神话', author: 'F. Brooks', coverColor: '#334155,#64748B,#CBD5E1', status: 'reading', noteCount: 3, rating: 4, lastReadDate: '2024-03-15', createdAt: now, updatedAt: now },
-    { id: 'b5', title: '代码大全', author: 'Steve McConnell', coverColor: '#DC2626,#F87171,#FECACA', status: 'not-yet', noteCount: 0, rating: 0, lastReadDate: '', createdAt: now, updatedAt: now },
-    { id: 'b6', title: '重构', author: 'Martin Fowler', coverColor: '#2563EB,#60A5FA,#BFDBFE', status: 'not-yet', noteCount: 0, rating: 0, lastReadDate: '', createdAt: now, updatedAt: now },
-    { id: 'b7', title: '程序员修炼之道', author: 'Hunt & Thomas', coverColor: '#9333EA,#C084FC,#E9D5FF', status: 'not-yet', noteCount: 0, rating: 0, lastReadDate: '', createdAt: now, updatedAt: now },
-    { id: 'b8', title: 'Clean Code', author: 'Robert Martin', coverColor: '#0D9488,#2DD4BF,#99F6E4', status: 'finished', noteCount: 56, rating: 5, lastReadDate: '2024-04-10', createdAt: now, updatedAt: now },
-    { id: 'b9', title: '黑客与画家', author: 'Paul Graham', coverColor: '#EA580C,#FB923C,#FED7AA', status: 'finished', noteCount: 23, rating: 4, lastReadDate: '2024-03-28', createdAt: now, updatedAt: now },
-    { id: 'b10', title: '编程珠玑', author: 'Jon Bentley', coverColor: '#4338CA,#818CF8,#C7D2FE', status: 'finished', noteCount: 18, rating: 5, lastReadDate: '2024-02-15', createdAt: now, updatedAt: now },
-    { id: 'b11', title: '计算机程序设计艺术', author: 'Donald Knuth', coverColor: '#BE185D,#F472B6,#FBCFE8', status: 'finished', noteCount: 41, rating: 5, lastReadDate: '2024-01-20', createdAt: now, updatedAt: now },
-    { id: 'b12', title: '架构整洁之道', author: 'Robert Martin', coverColor: '#1E40AF,#3B82F6,#93C5FD', status: 'finished', noteCount: 32, rating: 4, lastReadDate: '2024-01-05', createdAt: now, updatedAt: now },
-  ];
-
-  const notes: Note[] = [
-    { id: 'n1', bookId: 'b1', text: '深度学习是机器学习的一个分支，它试图使用包含复杂结构或由多重非线性变换构成的多个处理层对数据进行高层抽象的算法。', chapter: '第1章 引言', type: 'highlight', createdAt: now },
-    { id: 'n2', bookId: 'b1', text: '反向传播算法是训练神经网络的核心算法，它通过计算损失函数对每个权重的梯度来更新权重。', chapter: '第6章 深度前馈网络', type: 'highlight', createdAt: now },
-    { id: 'n3', bookId: 'b1', text: '这里对卷积神经网络的解释非常清晰，池化层的设计思想值得深入思考。', chapter: '第9章 卷积网络', type: 'thought', createdAt: now },
-    { id: 'n4', bookId: 'b8', text: '有意义的命名是代码可读性的基础。变量名应该揭示意图，而不是掩盖它。', chapter: '第2章 有意义的命名', type: 'highlight', createdAt: now },
-    { id: 'n5', bookId: 'b8', text: '函数应该短小精悍，只做一件事，做好这件事，只做这一件事。', chapter: '第3章 函数', type: 'highlight', createdAt: now },
-    { id: 'n6', bookId: 'b9', text: '创造财富的最佳途径不是通过掠夺现有的财富，而是通过创造新的财富。', chapter: '第6章 如何创造财富', type: 'highlight', createdAt: now },
-    { id: 'n7', bookId: 'b2', text: '分治法是一种重要的算法设计范式，将问题分解为更小的子问题，递归求解后合并结果。', chapter: '第4章 分治策略', type: 'highlight', createdAt: now },
-    { id: 'n8', bookId: 'b3', text: '观察者模式定义了对象之间的一对多依赖关系，当一个对象状态改变时，所有依赖者都会收到通知。', chapter: '第5章 观察者模式', type: 'highlight', createdAt: now },
-  ];
-
-  const stats: ReadingStats = {
-    totalBooks: 12,
-    totalNotes: 278,
-    totalReadingTime: 2760,
-    finishedBooks: 5,
-    readingStreak: 7,
-    avgReadingSpeed: 25,
-  };
-
-  const monthlyData: MonthlyData[] = [
-    { month: '2024-01', readingTime: 420, booksFinished: 2, notesCount: 45 },
-    { month: '2024-02', readingTime: 380, booksFinished: 1, notesCount: 38 },
-    { month: '2024-03', readingTime: 520, booksFinished: 2, notesCount: 62 },
-    { month: '2024-04', readingTime: 440, booksFinished: 1, notesCount: 55 },
-    { month: '2024-05', readingTime: 300, booksFinished: 0, notesCount: 30 },
-    { month: '2024-06', readingTime: 200, booksFinished: 0, notesCount: 18 },
-    { month: '2024-07', readingTime: 0, booksFinished: 0, notesCount: 0 },
-    { month: '2024-08', readingTime: 0, booksFinished: 0, notesCount: 0 },
-    { month: '2024-09', readingTime: 0, booksFinished: 0, notesCount: 0 },
-    { month: '2024-10', readingTime: 0, booksFinished: 0, notesCount: 0 },
-    { month: '2024-11', readingTime: 0, booksFinished: 0, notesCount: 0 },
-    { month: '2024-12', readingTime: 0, booksFinished: 0, notesCount: 0 },
-  ];
-
-  await saveBooks(books);
-  await saveNotes(notes);
-  await saveStats(stats);
-  await saveMonthlyData(monthlyData);
+  try {
+    await AsyncStorage.setItem(KEYS.MONTHLY_DATA, JSON.stringify(data));
+  } catch (e) {
+    console.error('[Storage] 保存月度数据失败:', e);
+    throw new Error('保存月度数据失败');
+  }
 }

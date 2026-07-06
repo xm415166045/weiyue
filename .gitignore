@@ -1,41 +1,54 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# dependencies
+# 依赖
 node_modules/
 
-# Expo
+# Expo / Metro 缓存与导出产物
 .expo/
 dist/
 web-build/
 expo-env.d.ts
+.metro-health-check*
 
-# Native
-.kotlin/
-*.orig.*
+# 原生工程生成目录
+/ios/
+/android/
+
+# 如果保留 android 原生工程，仍需忽略构建缓存
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/build/
+
+# 构建产物
+*.apk
+*.aab
+*.apks
+
+# 签名与证书
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+*.pem
 
-# Metro
-.metro-health-check*
+# 本地环境
+.env
+.env.*
+!.env.example
 
-# debug
+# 日志
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.log
 
-# macOS
-.DS_Store
-*.pem
-
-# local env files
-.env*.local
-
-# typescript
+# TypeScript
 *.tsbuildinfo
 
-# generated native folders
-/ios
-/android
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时备份
+*.orig.*

@@ -1,22 +1,33 @@
 {
   "expo": {
-    "name": "weread-notes",
-    "slug": "weread-notes",
-    "version": "1.0.0",
+    "name": "微阅",
+    "slug": "yuewei",
+    "version": "2.0.20",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "plugins": [
+      "./app.plugin.js"
+    ],
+    "splash": {
+      "image": "./assets/splash-screen.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#114498"
+    },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yuewei.app"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#114498",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.yuewei.app",
+      "versionCode": 48
     },
     "web": {
       "favicon": "./assets/favicon.png"

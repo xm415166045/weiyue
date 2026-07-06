@@ -1,0 +1,16 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml:2:13-83
+INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml:2:13-83
+	package
+		INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml
+	xmlns:android
+		ADDED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml:2:23-81
+uses-sdk
+INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml reason: use-sdk injection requested
+INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml
+INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml
+	android:targetSdkVersion
+		INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml
+	android:minSdkVersion
+		INJECTED from /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/tmp/ProcessLibraryManifest/release/tempAndroidManifest6965701957946206257.xml

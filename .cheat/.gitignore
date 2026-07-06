@@ -1,0 +1,4 @@
+# .cheat 工作区忽略：预测/复盘是"赛前+赛后"数据，不应被当作源码改动噪声
+# 但 commit 里保留初始骨架，便于复盘时 git show 锁死原生模块 sha
+.cheat/node_modules/
+.cheat/*.log
