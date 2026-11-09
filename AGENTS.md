@@ -46,7 +46,7 @@
 ## 构建 / 打包（2026-11-09 实测）
 
 - 本机工具链已统一到 `D:\AndroidSDK`（2026-11-09 合并学习台与微阅两套环境）：JDK 17 (Temurin 17.0.20.1) 在 `D:\AndroidSDK\jdk`、Android SDK 在 `D:\AndroidSDK\sdk`（platforms 34/36、build-tools 34.0.0/35.0.0/36.0.0、NDK 27.1、cmake 3.22.1）、`node_modules` 940 个包。该路径本身纯 ASCII，构建时**不需要**再映射 Y:/Z: 盘符。
-- **中文工作区路径（曲小明 / 微阅）会让 AGP 的 prefab / CMake / ninja 阶段失败**：cmd.exe 按 GBK 解析 UTF-8 中文路径导致命令行断裂。`android.overridePathCheck=true` 只压掉警告，不解决根因；junction / subst 也都不够（会被解析回真实路径或让 autolinking 失败）。**必须把项目物理复制到纯 ASCII 路径**（当前 `C:\Users\Public\yuewei\src`）配合 subst 盘符构建，完整命令见 `outputs/微阅-横屏与增量导入方案.md` 第六节。
+- **中文工作区路径（本机用户名 / 微阅）会让 AGP 的 prefab / CMake / ninja 阶段失败**：cmd.exe 按 GBK 解析 UTF-8 中文路径导致命令行断裂。`android.overridePathCheck=true` 只压掉警告，不解决根因；junction / subst 也都不够（会被解析回真实路径或让 autolinking 失败）。**必须把项目物理复制到纯 ASCII 路径**（当前 `C:\Users\Public\yuewei\src`）配合 subst 盘符构建，完整命令见 `outputs/微阅-横屏与增量导入方案.md` 第六节。
 - Windows 下需 `GRADLE_OPTS` / `JAVA_TOOL_OPTIONS` 强制 UTF-8；`android/gradle.properties` 需 `android.overridePathCheck=true` 与 300 秒 HTTP 超时（`build-apk.sh` 会幂等补齐）。
 - `build-apk.sh` 递进版本时会同步 `android/app/build.gradle` 的 versionCode / versionName，避免 APK 内版本与 `app.json` 漂移。
 - release 构建目前复用 `debug.keystore` 签名，可用于调试安装，**不能上架应用商店**。
