@@ -18,6 +18,19 @@ android/app/build/
 android/app/.cxx/
 android/build/
 
+# 任意本地原生模块的编译产物（禁止入库）
+# 注：曾为 cheat-engine「锁原生模块指纹」把 .dex/.bin force-add 进仓库，
+#     现已清理；如需锁指纹请提交 sha 文本文件，不要提交二进制。
+**/build/
+**/.cxx/
+**/.gradle/
+**/.transforms/
+**/*.dex
+
+# 自定义原生模块源码的唯一真源在 plugins/native/（受版本控制），
+# 由 app.plugin.js 在 prebuild 时恢复到被忽略的 android/ 目录。
+!plugins/native/
+
 # 构建产物
 *.apk
 *.aab

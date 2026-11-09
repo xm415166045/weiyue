@@ -1,6 +1,6 @@
 {
   "name": "yuewei",
-  "version": "2.0.15",
+  "version": "2.0.37",
   "main": "index.ts",
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",
@@ -12,13 +12,11 @@
     "expo": "~56.0.9",
     "expo-clipboard": "~56.0.4",
     "expo-file-system": "~56.0.7",
-    "expo-file-saver": "file:./modules/expo-file-saver",
     "expo-print": "~56.0.3",
     "expo-sharing": "~56.0.16",
     "expo-splash-screen": "^56.0.10",
     "expo-status-bar": "~56.0.4",
     "jszip": "^3.10.1",
-    "playwright": "^1.60.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.85.3",
@@ -31,6 +29,7 @@
   "devDependencies": {
     "@types/react": "~19.2.2",
     "eas-cli": "^20.1.0",
+    "playwright": "^1.60.0",
     "typescript": "~6.0.3"
   },
   "scripts": {
