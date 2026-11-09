@@ -2,8 +2,8 @@
  * 文件保存桥接层 — 统一访问自定义原生模块 FileSaverModule。
  *
  * 唯一生效的原生实现：
- *   android/app/src/main/java/com/yuewei/app/filesaver/FileSaverModule.java
- *   由 android/app/src/main/java/com/yuewei/app/MainApplication.kt 中
+ *   android/app/src/main/java/com/weiyue/app/filesaver/FileSaverModule.java
+ *   由 android/app/src/main/java/com/weiyue/app/MainApplication.kt 中
  *   手工注册的 FileSaverPackage 提供 NativeModules.FileSaverModule。
  *
  * 说明：历史上 modules/expo-file-saver 下另有一份 Kotlin Expo 模块

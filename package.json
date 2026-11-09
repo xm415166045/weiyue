@@ -1,6 +1,6 @@
 {
-  "name": "yuewei",
-  "version": "2.0.37",
+  "name": "weiyue",
+  "version": "2.0.38",
   "main": "index.ts",
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",

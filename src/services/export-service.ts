@@ -7,7 +7,7 @@
  *   S1 【主路径】NativeModules.FileSaver → MediaStore.Downloads 静默写入 Download/微阅/（零权限零交互）
  *   S2 【兜底】已 SAF 授权过的 treeUri → 静默写入 Download/微阅/（个别 OEM 让 MediaStore 返回 null 时）
  *   S3 【兜底】首次 SAF 目录选择器（不预置 Download 根，避免 Android 11+ 限制）→ 授权后持久化
- *   S4 【终极兜底】文件始终备份到 yuewei-export/（应用持久目录），并告知用户取回路径
+ *   S4 【终极兜底】文件始终备份到 weiyue-export/（应用持久目录），并告知用户取回路径
  *   注意：Android 11+ 禁止用 ACTION_OPEN_DOCUMENT_TREE 选择 Download 根目录，故不预置。
  */
 
@@ -74,7 +74,7 @@ let _exportDir: Directory | null = null;
 
 async function getExportDir(): Promise<Directory> {
   if (!_exportDir) {
-    const dir = new Directory(Paths.document, 'yuewei-export');
+    const dir = new Directory(Paths.document, 'weiyue-export');
     if (!dir.exists) dir.create({ intermediates: true });
     _exportDir = dir;
   }
@@ -113,15 +113,15 @@ function getMimeType(fileName: string, mimeType?: string): string {
  *   S4 expo-sharing 分享菜单（终极兜底）
  *   全部失败 → 弹出诊断信息（显示每一步的真实错误）
  *
- * 文件始终先备份到 yuewei-export/（应用持久目录），保证不丢失。
+ * 文件始终先备份到 weiyue-export/（应用持久目录），保证不丢失。
  *
  * @param sourcePath 源文件路径
  * @param fileName   目标文件名（含扩展名）
  * @param mimeType   MIME 类型
  * @returns 保存路径（content:// 或 file://），失败/取消返回空字符串
  */
-const SAF_TREE_URI_KEY = 'yuewei_saf_tree_uri';
-const SAF_DIR_URI_KEY = 'yuewei_saf_dir_uri';
+const SAF_TREE_URI_KEY = 'weiyue_saf_tree_uri';
+const SAF_DIR_URI_KEY = 'weiyue_saf_dir_uri';
 
 async function loadTreeUri(): Promise<string | null> {
   try {
@@ -150,7 +150,7 @@ async function clearTreeUri(): Promise<void> {
 }
 
 /** 「微阅」子目录 URI 持久化（避免每次导出都新建同名文件夹） */
-async function loadYueweiDirUri(): Promise<string | null> {
+async function loadWeiyueDirUri(): Promise<string | null> {
   try {
     return await AsyncStorage.getItem(SAF_DIR_URI_KEY);
   } catch {
@@ -158,7 +158,7 @@ async function loadYueweiDirUri(): Promise<string | null> {
   }
 }
 
-async function persistYueweiDirUri(uri: string): Promise<void> {
+async function persistWeiyueDirUri(uri: string): Promise<void> {
   try {
     await AsyncStorage.setItem(SAF_DIR_URI_KEY, uri);
   } catch {
@@ -166,7 +166,7 @@ async function persistYueweiDirUri(uri: string): Promise<void> {
   }
 }
 
-async function clearYueweiDirUri(): Promise<void> {
+async function clearWeiyueDirUri(): Promise<void> {
   try {
     await AsyncStorage.removeItem(SAF_DIR_URI_KEY);
   } catch {
@@ -216,7 +216,7 @@ export async function saveFile(sourcePath: string, fileName: string, mimeType?: 
     } catch {
       /* ignore */
     }
-    Alert.alert('保存失败', 'iOS 分享不可用，文件已暂存在应用内（yuewei-export/）。');
+    Alert.alert('保存失败', 'iOS 分享不可用，文件已暂存在应用内（weiyue-export/）。');
     return '';
   }
 
@@ -303,14 +303,14 @@ export async function saveFile(sourcePath: string, fileName: string, mimeType?: 
 
   // S4: 终极兜底 — 文件已安全保存在 Step 1 的应用专属目录（documentDirectory）
   // 借鉴 MusicFree 方案：Android 10+ 作用域存储下，应用对自己外部存储目录拥有零权限自由读写权。
-  // 路径示例：/storage/emulated/0/Android/data/com.yuewei.app/files/yuewei-export/<文件名>
-  // 用户可通过系统文件管理器 → Android/data/com.yuewei.app/files/yuewei-export/ 找到文件。
+  // 路径示例：/storage/emulated/0/Android/data/com.weiyue.app/files/weiyue-export/<文件名>
+  // 用户可通过系统文件管理器 → Android/data/com.weiyue.app/files/weiyue-export/ 找到文件。
   if (__DEV__) console.log('[Export] 全部公共目录方案失败，返回应用内备份路径:', destFile.uri);
   Alert.alert(
     '已保存到应用内目录',
     '无法写入公共「下载」文件夹（' + errors.length + ' 个原因见下方）。\n\n' +
       '✅ 文件已安全保存在应用内，可通过以下路径找到：\n' +
-      '📂 系统文件管理器 → Android → data → com.yuewei.app → files → yuewei-export\n\n' +
+      '📂 系统文件管理器 → Android → data → com.weiyue.app → files → weiyue-export\n\n' +
       '技术信息：\n' + errors.join('\n'),
   );
   return destFile.uri;
@@ -349,21 +349,21 @@ async function safWriteFile(
     //   - 用户选「下载」根 → 在其下建/复用「微阅」子目录（目标：下载/微阅/）
     //   - 用户误选了「微阅」文件夹本身 → 直接往该目录写，绝不再建子文件夹（避免 微阅/微阅 嵌套）
     const treeDecoded = decodeURIComponent(treeUri).replace(/\/+$/, '');
-    const userPickedYuewei = treeDecoded.endsWith('微阅');
+    const userPickedWeiyue = treeDecoded.endsWith('微阅');
 
     // 1) 优先复用持久化的「微阅」子目录 URI（创建一次后永久复用，绝不再 makeDirectory）
-    const savedDir = await loadYueweiDirUri();
+    const savedDir = await loadWeiyueDirUri();
     if (savedDir) {
       const ok = await writeInto(savedDir);
       if (ok) return ok;
-      await clearYueweiDirUri();
+      await clearWeiyueDirUri();
     }
 
     // 2) 用户直接选了「微阅」文件夹 → 直接写，持久化该目录（不再建子文件夹，避免嵌套）
-    if (userPickedYuewei) {
+    if (userPickedWeiyue) {
       const ok = await writeInto(treeUri);
       if (ok) {
-        await persistYueweiDirUri(treeUri);
+        await persistWeiyueDirUri(treeUri);
         return ok;
       }
       throw new Error('SAF write into selected 微阅 dir failed');
@@ -384,7 +384,7 @@ async function safWriteFile(
         if (existing) {
           const ok = await writeInto(existing);
           if (ok) {
-            await persistYueweiDirUri(existing);
+            await persistWeiyueDirUri(existing);
             return ok;
           }
         }
@@ -396,7 +396,7 @@ async function safWriteFile(
     // 4) 不存在才在下载根下创建「微阅」子目录并持久化（makeDirectory 失败=权限失效，向上抛触发重授权）
     try {
       const newDir = await Saf.makeDirectoryAsync(treeUri, '微阅');
-      await persistYueweiDirUri(newDir);
+      await persistWeiyueDirUri(newDir);
       const ok = await writeInto(newDir);
       if (ok) return ok;
     } catch (e: any) {

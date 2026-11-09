@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "微阅",
-    "slug": "yuewei",
-    "version": "2.0.37",
+    "slug": "weiyue",
+    "version": "2.0.38",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.yuewei.app"
+      "bundleIdentifier": "com.weiyue.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -26,8 +26,8 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.yuewei.app",
-      "versionCode": 65
+      "package": "com.weiyue.app",
+      "versionCode": 66
     },
     "web": {
       "favicon": "./assets/favicon.png"

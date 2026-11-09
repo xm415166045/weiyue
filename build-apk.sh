@@ -139,7 +139,7 @@ write('./package.json', pkg);
 // 锁文件只替换顶层两处 version，避免重排整份 JSON
 let lock = fs.readFileSync('./package-lock.json', 'utf8');
 lock = lock.replace(/(\"version\": \")[0-9]+\.[0-9]+\.[0-9]+(\",\n  \"lockfileVersion\")/, (m, p1, p2) => p1 + V + p2);
-lock = lock.replace(/(\"name\": \"yuewei\",\n      \"version\": \")[0-9]+\.[0-9]+\.[0-9]+(\")/, (m, p1, p2) => p1 + V + p2);
+lock = lock.replace(/(\"name\": \"weiyue\",\n      \"version\": \")[0-9]+\.[0-9]+\.[0-9]+(\")/, (m, p1, p2) => p1 + V + p2);
 fs.writeFileSync('./package-lock.json', lock);
 
 // 同步 android/app/build.gradle 里 prebuild 写死的 versionCode / versionName，
@@ -164,7 +164,7 @@ echo -e "${YELLOW}[4/6] 准备 Android 原生项目...${NC}"
 
 cd "$PROJECT_DIR"
 
-NATIVE_MODULE="android/app/src/main/java/com/yuewei/app/filesaver/FileSaverModule.java"
+NATIVE_MODULE="android/app/src/main/java/com/weiyue/app/filesaver/FileSaverModule.java"
 if [ ! -d "android" ] || [ ! -f "$NATIVE_MODULE" ]; then
     echo -e "${YELLOW}→ 原生工程或自定义 FileSaverModule 缺失，运行 expo prebuild...${NC}"
     echo -e "  （app.plugin.js 会自动恢复 plugins/native/ 下的源码并注册 FileSaverPackage）"

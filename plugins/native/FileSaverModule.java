@@ -1,4 +1,4 @@
-package com.yuewei.app.filesaver;
+package com.weiyue.app.filesaver;
 
 import android.content.ContentResolver;
 import android.content.ContentValues;
@@ -140,12 +140,12 @@ public class FileSaverModule extends ReactContextBaseJavaModule {
 
     private Uri saveUsingLegacy(String fileName, File sourceFile) throws Exception {
         File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        File yueweiDir = new File(downloadDir, "微阅");
-        if (!yueweiDir.exists()) {
-            yueweiDir.mkdirs();
+        File weiyueDir = new File(downloadDir, "微阅");
+        if (!weiyueDir.exists()) {
+            weiyueDir.mkdirs();
         }
 
-        File destFile = new File(yueweiDir, fileName);
+        File destFile = new File(weiyueDir, fileName);
         FileInputStream inputStream = new FileInputStream(sourceFile);
         java.io.FileOutputStream outputStream = new java.io.FileOutputStream(destFile);
 
@@ -187,15 +187,15 @@ public class FileSaverModule extends ReactContextBaseJavaModule {
             String safeMime = (mimeType == null || mimeType.isEmpty()) ? "application/octet-stream" : mimeType;
 
             // 1) 找到或创建「微阅」子文件夹
-            Uri yueweiUri = findOrCreateDir(tree, rootDocId, "微阅");
-            if (yueweiUri == null) {
+            Uri weiyueUri = findOrCreateDir(tree, rootDocId, "微阅");
+            if (weiyueUri == null) {
                 promise.reject("MKDIR_FAILED", "无法创建或找到 微阅 子文件夹");
                 return;
             }
-            String yueweiDocId = DocumentsContract.getDocumentId(yueweiUri);
+            String weiyueDocId = DocumentsContract.getDocumentId(weiyueUri);
 
             // 2) 若同名文件已存在则删除（覆盖写入）
-            Uri existing = findChildByName(tree, yueweiDocId, fileName);
+            Uri existing = findChildByName(tree, weiyueDocId, fileName);
             if (existing != null) {
                 try {
                     DocumentsContract.deleteDocument(cr, existing);
@@ -204,7 +204,7 @@ public class FileSaverModule extends ReactContextBaseJavaModule {
             }
 
             // 3) 创建目标文件
-            Uri fileUri = DocumentsContract.createDocument(cr, yueweiUri, safeMime, fileName);
+            Uri fileUri = DocumentsContract.createDocument(cr, weiyueUri, safeMime, fileName);
             if (fileUri == null) {
                 promise.reject("CREATE_FAILED", "无法创建文件: " + fileName);
                 return;

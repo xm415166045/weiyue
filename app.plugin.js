@@ -123,7 +123,7 @@ function withAndroidNativeSources(config) {
     <cache-path name="internal_cache" path="."/>
     <external-files-path name="external_files" path="."/>
     <external-cache-path name="external_cache" path="."/>
-    <files-path name="yuewei_export" path="yuewei-export/"/>
+    <files-path name="weiyue_export" path="weiyue-export/"/>
     <files-path name="covers" path="covers/"/>
 </paths>`;
         fs.writeFileSync(filePathsXml, xmlContent, 'utf-8');
@@ -132,7 +132,7 @@ function withAndroidNativeSources(config) {
       // ---- 2. 恢复自定义原生模块源码（plugins/native/ 为唯一真源）----
       const templateDir = path.join(projectRoot, 'plugins', 'native');
       const targetDir = path.join(
-        androidRoot, 'app', 'src', 'main', 'java', 'com', 'yuewei', 'app', 'filesaver',
+        androidRoot, 'app', 'src', 'main', 'java', 'com', 'weiyue', 'app', 'filesaver',
       );
       if (fs.existsSync(templateDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
@@ -148,16 +148,16 @@ function withAndroidNativeSources(config) {
 
       // ---- 3. 幂等注册 FileSaverPackage ----
       const mainApp = path.join(
-        androidRoot, 'app', 'src', 'main', 'java', 'com', 'yuewei', 'app', 'MainApplication.kt',
+        androidRoot, 'app', 'src', 'main', 'java', 'com', 'weiyue', 'app', 'MainApplication.kt',
       );
       if (fs.existsSync(mainApp)) {
         let kt = fs.readFileSync(mainApp, 'utf8');
         let changed = false;
 
-        if (!kt.includes('com.yuewei.app.filesaver.FileSaverPackage')) {
+        if (!kt.includes('com.weiyue.app.filesaver.FileSaverPackage')) {
           kt = kt.replace(
-            /(package com\.yuewei\.app[^\n]*\n)/,
-            '$1\nimport com.yuewei.app.filesaver.FileSaverPackage\n',
+            /(package com\.weiyue\.app[^\n]*\n)/,
+            '$1\nimport com.weiyue.app.filesaver.FileSaverPackage\n',
           );
           changed = true;
         }
@@ -201,7 +201,7 @@ function withIosOrientations(config) {
 /**
  * 组合所有插件
  */
-module.exports = function withYuewei(config) {
+module.exports = function withWeiyue(config) {
   config = withAndroidManifestPlugin(config);
   config = withIosOrientations(config);
   config = withAndroidNativeSources(config);
