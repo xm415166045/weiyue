@@ -6,7 +6,7 @@ import { colors } from '../theme/colors';
 import React from 'react';
 import {
   View, Text, TouchableOpacity, Modal,
-  StyleSheet,
+  ScrollView, StyleSheet, useWindowDimensions,
 } from 'react-native';
 
 interface ConfirmSheetProps {
@@ -24,6 +24,9 @@ export default function ConfirmSheet({
   visible, title, message, confirmLabel = '确认', cancelLabel = '取消',
   confirmColor = colors.error, onConfirm, onCancel,
 }: ConfirmSheetProps) {
+  const { width, height } = useWindowDimensions();
+  const boxWidth = Math.min(270, width * 0.8);
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
       <View style={styles.overlay}>
@@ -31,12 +34,12 @@ export default function ConfirmSheet({
           <View style={styles.backdrop} />
         </TouchableOpacity>
 
-        <View style={styles.sheet}>
-        {/* 内容区 */}
-        <View style={styles.content}>
+        <View style={[styles.sheet, { width: boxWidth, maxHeight: height * 0.8 }]}>
+        {/* 内容区：横屏高度受限时可滚动 */}
+        <ScrollView contentContainerStyle={styles.content} bounces={false}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
-        </View>
+        </ScrollView>
 
         {/* 按钮区 */}
         <View style={styles.divider} />
@@ -66,7 +69,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.overlay,
   },
   sheet: {
-    width: 270,
     backgroundColor: '#FFF',
     borderRadius: 16,
     overflow: 'hidden',

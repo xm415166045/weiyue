@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, FlatList,
   StyleSheet, Alert, Image, ActivityIndicator, TextInput,
-  Dimensions, PanResponder, RefreshControl,
+  useWindowDimensions, PanResponder, RefreshControl,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -42,6 +42,11 @@ export default function BookshelfScreen({ navigation }: any) {
   const [searchQuery, setSearchQuery] = useState('');
   const [coverCache, setCoverCache] = useState<Map<string, CoverCacheResult>>(new Map());
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  // 横屏时左右安全区（刘海/挖孔）要扣掉，否则网格会溢出
+  const contentWidth = windowWidth - insets.left - insets.right;
+  const columns = gridColumns(contentWidth);
+  const cellWidth = gridCellWidth(contentWidth, columns);
 
   const loadBooks = useCallback(async () => {
     try {
@@ -274,7 +279,7 @@ export default function BookshelfScreen({ navigation }: any) {
     const cached = coverCache.get(item.id);
     return (
       <TouchableOpacity
-        style={styles.bookCell}
+        style={[styles.bookCell, { width: cellWidth }]}
         onPress={() => handlePress(item)}
         onLongPress={() => handleLongPress(item)}
         delayLongPress={400}
@@ -283,7 +288,7 @@ export default function BookshelfScreen({ navigation }: any) {
         accessibilityLabel={`${item.title}，作者${item.author}`}
       >
         <View style={styles.coverWrap}>
-          <BookCover item={item} cachedUri={cached?.uri} />
+          <BookCover item={item} cachedUri={cached?.uri} cellWidth={cellWidth} />
           {isSelected && (
             <View style={styles.selectOverlay}>
               <View style={styles.selectCheck}>
@@ -309,10 +314,14 @@ export default function BookshelfScreen({ navigation }: any) {
         </Text>
       </TouchableOpacity>
     );
-  }, [selectedIds, handlePress, handleLongPress]);
+  }, [selectedIds, handlePress, handleLongPress, cellWidth]);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]} {...panResponder.panHandlers}>
+    <View style={[styles.container, {
+      paddingTop: insets.top,
+      paddingLeft: insets.left,
+      paddingRight: insets.right,
+    }]} {...panResponder.panHandlers}>
       {/* Nav Bar */}
       <View style={styles.navBar}>
         <View style={{ width: 44 }} />
@@ -364,32 +373,41 @@ export default function BookshelfScreen({ navigation }: any) {
         )}
       </View>
 
-      {/* Metadata — 对齐书迹：N/M 本有记录的书 */}
-      <View style={styles.metaBar}>
-        <Text style={styles.metaText}>
-          {displayBooks.length} / {books.length} 本{filter !== 'all' ? ` · ${FILTERS.find(f => f.key === filter)?.label}` : ''}
-        </Text>
-        {searchQuery.trim() && (
+      {/* Metadata — 平时不占行，仅搜索时提示命中数（计数在下方筛选标签里已有） */}
+      {searchQuery.trim().length > 0 && (
+        <View style={styles.metaBar}>
+          <Text style={styles.metaText}>
+            {displayBooks.length} / {books.length} 本
+          </Text>
           <Text style={styles.metaHint}>搜索 "{searchQuery.trim()}"</Text>
-        )}
-      </View>
+        </View>
+      )}
 
-      {/* Status Tabs */}
+      {/* Status Tabs — 三等分纯文字，选中态用下划线，避免胶囊宽度不一造成的失衡 */}
       <View style={styles.statusTabs}>
-        {FILTERS.map(f => (
-          <TouchableOpacity
-            key={f.key}
-            style={[styles.statusTab, filter === f.key && styles.statusTabActive]}
-            onPress={() => dispatch(setFilter(f.key))}
-          >
-            <Text style={[styles.statusTabText, filter === f.key && styles.statusTabTextActive]}>
-              {f.label}
-            </Text>
-            <Text style={[styles.statusTabCount, filter === f.key && styles.statusTabCountActive]}>
-              {counts[f.key]}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {FILTERS.map(f => {
+          const active = filter === f.key;
+          return (
+            <TouchableOpacity
+              key={f.key}
+              style={styles.statusTab}
+              activeOpacity={0.6}
+              onPress={() => dispatch(setFilter(f.key))}
+            >
+              <Text
+                style={[styles.statusTabText, active && styles.statusTabTextActive]}
+                allowFontScaling={false}
+                numberOfLines={1}
+              >
+                {f.label}
+                <Text style={[styles.statusTabCount, active && styles.statusTabCountActive]}>
+                  {' '}{counts[f.key]}
+                </Text>
+              </Text>
+              <View style={[styles.statusTabBar, active && styles.statusTabBarActive]} />
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       {/* Select Mode Bar */}
@@ -417,7 +435,8 @@ export default function BookshelfScreen({ navigation }: any) {
         data={displayBooks}
         renderItem={renderBook}
         keyExtractor={item => item.id}
-        numColumns={4}
+        key={`grid-${columns}`}
+        numColumns={columns}
         windowSize={5}
         maxToRenderPerBatch={8}
         removeClippedSubviews={true}
@@ -501,19 +520,34 @@ export default function BookshelfScreen({ navigation }: any) {
   );
 }
 
-const ITEMS_PER_ROW = 4;
-const SCREEN_PADDING = 24; // 左右各12
+const SCREEN_PADDING = 24; // grid 左右各 12
 const GAP = 10;
-const CELL_WIDTH = (Dimensions.get('window').width - SCREEN_PADDING - (ITEMS_PER_ROW - 1) * GAP) / ITEMS_PER_ROW;
 
-// 封面组件：带图片加载失败回退 + 缓存支持
-const BookCover: React.FC<{ item: Book; cachedUri?: string }> = ({ item, cachedUri }) => {
+/** 按可用宽度分档决定每行列数：竖屏对齐微信读书 3 列，横屏 / 平板自动增列 */
+function gridColumns(contentWidth: number): number {
+  if (contentWidth >= 1100) return 7;
+  if (contentWidth >= 900) return 6;
+  if (contentWidth >= 700) return 5;
+  if (contentWidth >= 520) return 4;
+  return 3;
+}
+
+function gridCellWidth(contentWidth: number, columns: number): number {
+  return (contentWidth - SCREEN_PADDING - (columns - 1) * GAP) / columns;
+}
+
+// 封面组件：带图片加载失败回退 + 缓存支持（尺寸由父组件按窗口宽度动态传入）
+const BookCover: React.FC<{ item: Book; cachedUri?: string; cellWidth: number }> = ({ item, cachedUri, cellWidth }) => {
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const gradientColors = (item.coverColor ?? '#007AFF,#5AC8FA,#A0D4FF').split(',');
   const displayUri = cachedUri || item.coverUrl;
   return (
-    <View style={[styles.coverImg, { backgroundColor: gradientColors[0] || colors.primary }]}>
+    <View style={[styles.coverImg, {
+      width: cellWidth,
+      height: cellWidth * 1.4,
+      backgroundColor: gradientColors[0] || colors.primary,
+    }]}>
       {displayUri && !failed ? (
         <Image
           source={{ uri: displayUri, cache: 'force-cache' }}
@@ -537,15 +571,15 @@ const BookCover: React.FC<{ item: Book; cachedUri?: string }> = ({ item, cachedU
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   navBar: {
-    height: 44, backgroundColor: '#FFF',
+    height: 38, backgroundColor: '#FFF',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, borderBottomWidth: 0.5, borderBottomColor: colors.border,
+    paddingHorizontal: 20,
   },
   navTitle: { fontSize: 17, fontWeight: '600', color: colors.textPrimary },
   iconBtn: { width: 32, height: 32, justifyContent: 'center', alignItems: 'center', borderRadius: 8 },
   iconBtnText: { fontSize: 18, color: colors.textPrimary },
   sortDropdown: {
-    position: 'absolute', top: 44, right: 16, zIndex: 100,
+    position: 'absolute', top: 40, right: 16, zIndex: 100,
     backgroundColor: '#FFF', borderRadius: 16,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.03, shadowRadius: 8,
@@ -562,37 +596,40 @@ const styles = StyleSheet.create({
   // Search Bar — 对齐书迹
   searchBar: {
     flexDirection: 'row', alignItems: 'center',
-    marginHorizontal: 16, marginTop: 10,
-    backgroundColor: '#FFF', borderRadius: 14,
-    paddingHorizontal: 12, height: 40,
+    marginHorizontal: 20, marginTop: 4,
+    backgroundColor: '#FFF', borderRadius: 15,
+    paddingHorizontal: 13, height: 30,
   },
-  searchIcon: { fontSize: 14, marginRight: 8 },
-  searchInput: { flex: 1, fontSize: 14, color: colors.textPrimary, paddingVertical: 0 },
-  searchClear: { fontSize: 16, color: colors.textTertiary, padding: 4 },
+  searchIcon: { fontSize: 12, marginRight: 7 },
+  searchInput: { flex: 1, fontSize: 13, color: colors.textPrimary, paddingVertical: 0 },
+  searchClear: { fontSize: 15, color: colors.textTertiary, padding: 4 },
 
-  // Meta Bar
+  // Meta Bar — 仅搜索时出现
   metaBar: {
     flexDirection: 'row', justifyContent: 'space-between',
-    paddingHorizontal: 18, paddingTop: 8, paddingBottom: 4,
+    paddingHorizontal: 22, paddingTop: 3, paddingBottom: 0,
   },
-  metaText: { fontSize: 12, color: colors.textSecondary },
-  metaHint: { fontSize: 12, color: colors.primary },
+  metaText: { fontSize: 11, color: colors.textSecondary },
+  metaHint: { fontSize: 11, color: colors.primary },
 
-  // Status Tabs — 微信读书风格
+  // Status Tabs — 三等分纯文字 + 选中下划线（等宽布局，避免色块宽度不均）
   statusTabs: {
-    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
-    gap: 28, paddingHorizontal: 16, paddingVertical: 10,
-    backgroundColor: '#FFF', borderBottomWidth: 0.5, borderBottomColor: colors.border,
+    flexDirection: 'row', alignItems: 'flex-end',
+    marginHorizontal: 20, marginTop: 6, marginBottom: 2,
   },
   statusTab: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    paddingVertical: 6, paddingHorizontal: 16, borderRadius: 16,
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingTop: 2, paddingBottom: 2,
   },
-  statusTabActive: { backgroundColor: colors.primaryBg },
-  statusTabText: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
+  statusTabText: { fontSize: 12.5, color: colors.textSecondary, fontWeight: '500' },
   statusTabTextActive: { color: colors.primary, fontWeight: '700' },
-  statusTabCount: { fontSize: 12, color: colors.textTertiary, marginLeft: 3 },
-  statusTabCountActive: { color: colors.primary },
+  statusTabCount: { fontSize: 11, color: colors.textTertiary, fontWeight: '400' },
+  statusTabCountActive: { color: colors.primary, fontWeight: '500' },
+  statusTabBar: {
+    width: 16, height: 2, borderRadius: 1, marginTop: 4,
+    backgroundColor: 'transparent',
+  },
+  statusTabBarActive: { backgroundColor: colors.primary },
 
   selectAllBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -613,18 +650,18 @@ const styles = StyleSheet.create({
   selectAllCancelBtn: { fontSize: 14, color: '#FFF', fontWeight: '600', paddingHorizontal: 6 },
 
   // Book Grid — 微信读书紧凑风格
-  grid: { paddingHorizontal: 12, paddingVertical: 12, paddingBottom: 120 },
-  row: { gap: GAP, marginBottom: 16, justifyContent: 'flex-start' },
-  bookCell: { width: CELL_WIDTH, alignItems: 'center' },
+  grid: { paddingHorizontal: 12, paddingVertical: 10, paddingBottom: 80 },
+  row: { gap: GAP, marginBottom: 14, justifyContent: 'flex-start' },
+  bookCell: { alignItems: 'center' },
   coverWrap: { position: 'relative', marginBottom: 6 },
   coverImg: {
-    width: CELL_WIDTH, height: CELL_WIDTH * 1.33, borderRadius: 12,
+    borderRadius: 8,
     justifyContent: 'center', alignItems: 'center',
     overflow: 'hidden',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.025, shadowRadius: 4, elevation: 1,
   },
-  coverImage: { width: '100%', height: '100%', borderRadius: 12 },
+  coverImage: { width: '100%', height: '100%', borderRadius: 8 },
   coverGradient: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0.5,
   },
@@ -635,7 +672,7 @@ const styles = StyleSheet.create({
   },
   selectOverlay: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(10,132,255,0.25)', borderRadius: 12,
+    backgroundColor: 'rgba(10,132,255,0.25)', borderRadius: 8,
     justifyContent: 'center', alignItems: 'center', zIndex: 2,
   },
   selectCheck: {

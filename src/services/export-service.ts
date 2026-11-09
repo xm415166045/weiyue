@@ -1,22 +1,27 @@
 /**
  * 导出服务 — 统一管道：Markdown → 目标格式
  *
- * 保存策略（targetSdk 36，零权限）：
- *   1. NativeModules.FileSaver → MediaStore.Downloads 静默保存到 Downloads/微阅/
- *   2. SAF 目录选择器 → 预选 Downloads，用户确认保存
- *   3. expo-sharing 分享菜单 → 终极兜底
- *   文件始终备份到 yuewei-export/（应用持久目录）
+ * 保存策略（targetSdk 36，零权限），依据 Android 官方文档（storage use-cases / MediaStore）：
+ *   Android 10+ 向 MediaStore.Downloads 写入「应用自有文件」无需任何存储权限，
+ *   且 RELATIVE_PATH 可指定子文件夹（Download/微阅），对标微信静默保存。
+ *   S1 【主路径】NativeModules.FileSaver → MediaStore.Downloads 静默写入 Download/微阅/（零权限零交互）
+ *   S2 【兜底】已 SAF 授权过的 treeUri → 静默写入 Download/微阅/（个别 OEM 让 MediaStore 返回 null 时）
+ *   S3 【兜底】首次 SAF 目录选择器（不预置 Download 根，避免 Android 11+ 限制）→ 授权后持久化
+ *   S4 【终极兜底】文件始终备份到 yuewei-export/（应用持久目录），并告知用户取回路径
+ *   注意：Android 11+ 禁止用 ACTION_OPEN_DOCUMENT_TREE 选择 Download 根目录，故不预置。
  */
 
-import { Paths, Directory, File, StorageAccessFramework } from 'expo-file-system';
+import { Paths, Directory, File } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system';
+// ⚠️ expo-file-system 56.x 将 SAF API 移到了 /legacy 子路径
+const { StorageAccessFramework: Saf, readAsStringAsync: legacyReadAsync } = require('expo-file-system/legacy');
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
 import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { saveToDownloadsAsync, isSaveToDownloadsAvailable, saveToSafTreeAsync } from '../../modules/expo-file-saver/src';
+import { saveToDownloadsAsync, isSaveToDownloadsAvailable } from './file-saver';
 import { getBooks, getNotes, getSettings } from './storage';
-import { createImaNote, addNoteToKnowledgeBase } from './ima-api';
+import { createMedia, uploadToCos, addKnowledgeToKb, utf8ByteLength } from './ima-api';
 import type { Book, Note } from '../types';
 
 // ====== 统一版本号（与 app.json 同步） ======
@@ -116,6 +121,7 @@ function getMimeType(fileName: string, mimeType?: string): string {
  * @returns 保存路径（content:// 或 file://），失败/取消返回空字符串
  */
 const SAF_TREE_URI_KEY = 'yuewei_saf_tree_uri';
+const SAF_DIR_URI_KEY = 'yuewei_saf_dir_uri';
 
 async function loadTreeUri(): Promise<string | null> {
   try {
@@ -131,6 +137,54 @@ async function persistTreeUri(uri: string): Promise<void> {
   } catch {
     /* ignore */
   }
+}
+
+/** 清除已失效的 SAF tree URI 缓存（权限被回收 / OEM 清理后需重新授权，同时清子目录缓存） */
+async function clearTreeUri(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(SAF_TREE_URI_KEY);
+    await AsyncStorage.removeItem(SAF_DIR_URI_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 「微阅」子目录 URI 持久化（避免每次导出都新建同名文件夹） */
+async function loadYueweiDirUri(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(SAF_DIR_URI_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function persistYueweiDirUri(uri: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(SAF_DIR_URI_KEY, uri);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function clearYueweiDirUri(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(SAF_DIR_URI_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 判断 SAF 错误是否属于"URI/权限失效"（应清除缓存并重授权） */
+function isSafUriInvalidError(e: any): boolean {
+  const msg = ((e?.message || String(e)) as string).toLowerCase();
+  return (
+    msg.includes("isn't writable") ||
+    msg.includes("is not writable") ||
+    msg.includes("rejected") ||
+    msg.includes("permission denied") ||
+    msg.includes("security exception") ||
+    msg.includes("illegalargumentexception")
+  );
 }
 
 export async function saveFile(sourcePath: string, fileName: string, mimeType?: string): Promise<string> {
@@ -166,57 +220,79 @@ export async function saveFile(sourcePath: string, fileName: string, mimeType?: 
     return '';
   }
 
-  // ====== Android：SAF 持久化授权（零权限，像微信静默保存到 下载/微阅） ======
+  // ====== Android：官方推荐零权限方案 ======
+  // 主路径：MediaStore.Downloads 静默写入 Download/微阅/（Android 10+ 零权限，对标微信）
+  // 兜底：MediaStore 在个别 OEM 返回 null 时，用 SAF 目录授权（一次性）写入
   const errors: string[] = [];
 
-  // S1: 已授权过的 treeUri → 静默写入 Download/微阅/（之后每次导出都走这里，零交互）
+  // S1: MediaStore.Downloads 静默保存（首选，零权限零交互）
+  try {
+    if (isSaveToDownloadsAvailable()) {
+      const r = await saveToDownloadsAsync(destFile.uri, fileName, resolvedMime);
+      if (r) {
+        if (__DEV__) console.log('[Export] MediaStore 静默保存成功:', r);
+        return r;
+      }
+      errors.push('• MediaStore 返回空（个别 OEM 限制 Downloads 写入，转 SAF 兜底）');
+    } else {
+      errors.push('• 原生模块未注册 (NativeModules.FileSaverModule 不可用)');
+    }
+  } catch (e: any) {
+    errors.push('• MediaStore 异常: ' + (e?.message || String(e)));
+  }
+
+  // S2: 已授权过的 SAF treeUri → 静默写入 Download/微阅/
+  let needReauthSaf = false; // 标记：旧 URI 失效，需要重新走 S3 授权
   try {
     const treeUri = await loadTreeUri();
     if (treeUri) {
-      const r = await saveToSafTreeAsync(treeUri, destFile.uri, fileName, resolvedMime);
-      if (r) {
-        if (__DEV__) console.log('[Export] SAF 持久写入成功:', r);
-        return r;
-      }
-      errors.push('• 已授权的文件夹写入失败（可能权限已失效，需重新授权）');
+      const r = await safWriteFile(treeUri, destFile.uri, fileName, resolvedMime);
+      if (__DEV__) console.log('[Export] SAF 持久写入结果:', r || '(null)');
+      if (r) return r;
+      const failReason = r === null ? '未知原因' : '见下方';
+      errors.push('• 已授权文件夹写入失败 (' + failReason + ')');
     }
   } catch (e: any) {
-    errors.push('• SAF 持久写入异常: ' + (e?.message || String(e)));
+    if (isSafUriInvalidError(e)) {
+      // URI / 权限已失效（OEM 回收权限、系统清理等）→ 清除旧缓存，标记需重授权
+      await clearTreeUri();
+      needReauthSaf = true;
+      errors.push('• SAF 授权已失效（' + (e?.message || String(e)) + '），将重新请求授权');
+    } else {
+      errors.push('• SAF 持久写入异常: ' + (e?.message || String(e)));
+    }
   }
 
-  // S2: 首次使用 → 清晰说明 + 系统文件夹选择器（预置 Download）
-  const granted = await new Promise<boolean>((resolve) => {
+  // S3: SAF 目录选择器（needReauthSaf=true 时自动触发，不弹确认；否则先征求用户同意）
+  const granted = needReauthSaf
+    ? true
+    : await new Promise<boolean>((resolve) => {
     Alert.alert(
-      '授权保存文件',
-      '微阅需要将导出的文件保存到「下载 / 微阅」文件夹。\n\n请在接下来的系统界面中选择「下载」，然后点击「使用此文件夹」。\n\n只需授权一次，之后导出将自动保存，无需再操作。',
+      '选择保存位置',
+      '系统自动保存不可用，请手动选择保存位置。\n\n请选择「下载」文件夹本身（选中「下载」即可，不要点进「微阅」子文件夹后再选）。应用会自动在下载下新建「微阅」文件夹，之后文件都保存在 下载/微阅/。\n\n只需授权一次。',
       [
-        { text: '暂不授权', style: 'cancel', onPress: () => resolve(false) },
-        { text: '去授权', onPress: () => resolve(true) },
+        { text: '暂不保存', style: 'cancel', onPress: () => resolve(false) },
+        { text: '去选择', onPress: () => resolve(true) },
       ],
     );
   });
 
   if (granted) {
     try {
-      let saf;
-      try {
-        const initialUri = StorageAccessFramework.getUriForDirectoryInRoot('Download');
-        saf = await StorageAccessFramework.requestDirectoryPermissionsAsync(initialUri);
-      } catch {
-        // 部分设备/系统不支持预置 Download，直接打开选择器（用户自行定位下载）
-        saf = await StorageAccessFramework.requestDirectoryPermissionsAsync();
-      }
-
+      // 关键：不预置 Download 根（Android 11+ 禁止 ACTION_OPEN_DOCUMENT_TREE 选择 Download 根）
+      const saf = await Saf.requestDirectoryPermissionsAsync();
       if (saf.granted && saf.directoryUri) {
         await persistTreeUri(saf.directoryUri);
-        const r = await saveToSafTreeAsync(saf.directoryUri, destFile.uri, fileName, resolvedMime);
+        const r = await safWriteFile(saf.directoryUri, destFile.uri, fileName, resolvedMime);
+        if (__DEV__) console.log('[Export] SAF 授权后写入结果:', r || '(null)');
         if (r) {
           if (__DEV__) console.log('[Export] SAF 授权后写入成功:', r);
           return r;
         }
-        errors.push('• 授权成功但写入失败');
+        const failReason = r === null ? '未知原因' : '见下方';
+        errors.push('• 授权成功但写入失败 (' + failReason + ')');
       } else {
-        errors.push('• 用户取消了文件夹授权');
+        errors.push('• 用户取消了文件夹选择');
       }
     } catch (e: any) {
       errors.push('• SAF 授权异常: ' + (e?.message || String(e)));
@@ -225,13 +301,113 @@ export async function saveFile(sourcePath: string, fileName: string, mimeType?: 
     errors.push('• 用户未授权');
   }
 
-  // 全部失败 → 说明 + 提示文件已暂存
+  // S4: 终极兜底 — 文件已安全保存在 Step 1 的应用专属目录（documentDirectory）
+  // 借鉴 MusicFree 方案：Android 10+ 作用域存储下，应用对自己外部存储目录拥有零权限自由读写权。
+  // 路径示例：/storage/emulated/0/Android/data/com.yuewei.app/files/yuewei-export/<文件名>
+  // 用户可通过系统文件管理器 → Android/data/com.yuewei.app/files/yuewei-export/ 找到文件。
+  if (__DEV__) console.log('[Export] 全部公共目录方案失败，返回应用内备份路径:', destFile.uri);
   Alert.alert(
-    '未能保存到本地',
-    '本机保存需要一次文件夹授权。\n\n文件已暂存在应用内（yuewei-export/），您可下次导出时点击「去授权」，或在「设置」中清除后重试。\n\n' +
-      (errors.length ? '技术信息：\n' + errors.join('\n') : ''),
+    '已保存到应用内目录',
+    '无法写入公共「下载」文件夹（' + errors.length + ' 个原因见下方）。\n\n' +
+      '✅ 文件已安全保存在应用内，可通过以下路径找到：\n' +
+      '📂 系统文件管理器 → Android → data → com.yuewei.app → files → yuewei-export\n\n' +
+      '技术信息：\n' + errors.join('\n'),
   );
-  return '';
+  return destFile.uri;
+}
+
+/**
+ * 通过 expo-file-system/legacy 的官方 SAF API 将文件写入授权目录下的「微阅」子文件夹。
+ *
+ * 使用 Expo 官方封装（makeDirectoryAsync / createFileAsync / writeAsStringAsync），
+ * 替代自定义原生模块的 DocumentsContract 方案，确保 Android 16 兼容性。
+ */
+async function safWriteFile(
+  treeUri: string,
+  sourcePath: string,
+  fileName: string,
+  mimeType: string,
+): Promise<string | null> {
+  try {
+    // ⚠️ expo-file-system 的 SAF 命名空间只有 readDirectoryAsync（返回 URI 字符串数组），
+    //    没有 listFilesAsync（那是别的库的 API）。之前误用 listFilesAsync 抛错被吞，
+    //    导致每次都走到 makeDirectoryAsync 新建「微阅 (N)」——正是"不停新建文件夹"的根因。
+    const writeInto = async (dirUri: string): Promise<string | null> => {
+      try {
+        const fileUri = await Saf.createFileAsync(dirUri, fileName, mimeType);
+        const content = await legacyReadAsync(sourcePath, { encoding: 'base64' });
+        await Saf.writeAsStringAsync(fileUri, content, { encoding: 'base64' });
+        if (__DEV__) console.log('[SAF] 写入成功:', fileUri);
+        return fileUri;
+      } catch (e: any) {
+        if (__DEV__) console.log('[SAF] 写入失败:', dirUri, e?.message);
+        return null;
+      }
+    };
+
+    // 关键修复：判断用户授权的目录本身是不是就叫「微阅」
+    //   - 用户选「下载」根 → 在其下建/复用「微阅」子目录（目标：下载/微阅/）
+    //   - 用户误选了「微阅」文件夹本身 → 直接往该目录写，绝不再建子文件夹（避免 微阅/微阅 嵌套）
+    const treeDecoded = decodeURIComponent(treeUri).replace(/\/+$/, '');
+    const userPickedYuewei = treeDecoded.endsWith('微阅');
+
+    // 1) 优先复用持久化的「微阅」子目录 URI（创建一次后永久复用，绝不再 makeDirectory）
+    const savedDir = await loadYueweiDirUri();
+    if (savedDir) {
+      const ok = await writeInto(savedDir);
+      if (ok) return ok;
+      await clearYueweiDirUri();
+    }
+
+    // 2) 用户直接选了「微阅」文件夹 → 直接写，持久化该目录（不再建子文件夹，避免嵌套）
+    if (userPickedYuewei) {
+      const ok = await writeInto(treeUri);
+      if (ok) {
+        await persistYueweiDirUri(treeUri);
+        return ok;
+      }
+      throw new Error('SAF write into selected 微阅 dir failed');
+    }
+
+    // 3) 扫描已存在的「微阅」子目录（用户选的是下载根）；取「最浅」的那个，
+    //    避免命中之前误产生的嵌套 微阅/微阅。
+    if (typeof Saf.readDirectoryAsync === 'function') {
+      try {
+        const children: string[] = await Saf.readDirectoryAsync(treeUri);
+        const candidates = children
+          .filter((uri) => decodeURIComponent(uri).replace(/\/+$/, '').endsWith('微阅'))
+          .sort(
+            (a, b) =>
+              decodeURIComponent(a).split('/').length - decodeURIComponent(b).split('/').length,
+          );
+        const existing = candidates[0];
+        if (existing) {
+          const ok = await writeInto(existing);
+          if (ok) {
+            await persistYueweiDirUri(existing);
+            return ok;
+          }
+        }
+      } catch (e: any) {
+        if (__DEV__) console.log('[SAF] readDirectoryAsync 异常:', e?.message);
+      }
+    }
+
+    // 4) 不存在才在下载根下创建「微阅」子目录并持久化（makeDirectory 失败=权限失效，向上抛触发重授权）
+    try {
+      const newDir = await Saf.makeDirectoryAsync(treeUri, '微阅');
+      await persistYueweiDirUri(newDir);
+      const ok = await writeInto(newDir);
+      if (ok) return ok;
+    } catch (e: any) {
+      throw e;
+    }
+
+    return null;
+  } catch (e: any) {
+    // 将真实错误重新抛出，让调用方捕获并显示到诊断弹窗
+    throw e;
+  }
 }
 
 async function getNotesMap(bookIds: string[], filterNoteIds?: string[]): Promise<Map<string, Note[]>> {
@@ -286,7 +462,7 @@ function buildMarkdown(book: Book, notes: Note[]): string {
   return lines.join('\n');
 }
 
-/** 生成 IMA 笔记用的 Markdown（去掉页脚，首行为 # 标题） */
+/** 生成上传到 IMA 知识库的 Markdown（去掉页脚，首行为 # 标题） */
 function buildImaMarkdown(book: Book, notes: Note[]): string {
   const md = buildMarkdown(book, notes);
   const lines = md.split('\n');
@@ -526,7 +702,7 @@ export async function exportBooksEPUB(bookIds: string[], noteIds?: string[]): Pr
   return { filePath: file.uri, fileName: fullFileName, mimeType: '*/*' };
 }
 
-// ====== 4. IMA 导出（对齐书迹桌面版） ======
+// ====== 4. IMA 导出（直接文件上传到个人知识库，不经过笔记） ======
 
 export async function exportBooksToIma(bookIds: string[], noteIds?: string[]): Promise<{ count: number; title: string }> {
   const settings = await getSettings();
@@ -534,11 +710,19 @@ export async function exportBooksToIma(bookIds: string[], noteIds?: string[]): P
     throw new Error('请先在设置中配置 IMA API Key 和 Client ID');
   }
 
+  const defaultKb = settings.sync.defaultKnowledgeBase;
+  if (!defaultKb) {
+    throw new Error('请先在设置中选择默认知识库（个人知识库）');
+  }
+
   const books = await getBooks();
   const selected = books.filter(b => bookIds.includes(b.id));
   if (selected.length === 0) throw new Error('未选择书籍');
 
   const notesMap = await getNotesMap(bookIds, noteIds);
+  const mediaType = 7; // Markdown 文件
+  const contentType = 'text/markdown';
+  const fileExt = 'md';
   let created = 0;
   let lastTitle = '';
 
@@ -547,26 +731,32 @@ export async function exportBooksToIma(bookIds: string[], noteIds?: string[]): P
       const notes = notesMap.get(book.id) || [];
       const title = `《${book.title}》读书笔记`;
       const content = buildImaMarkdown(book, notes);
-      const noteId = await createImaNote(
+      const byteSize = utf8ByteLength(content);
+
+      // 第1步：向 IMA 申请 COS 上传凭证
+      const { mediaId, cosCredential } = await createMedia(
         settings.ima.clientId,
         settings.ima.apiKey,
-        title,
-        content,
+        defaultKb,
+        `${title}.md`,
+        byteSize,
+        mediaType,
+        contentType,
+        fileExt,
       );
 
-      if (settings.sync.defaultKnowledgeBase && noteId) {
-        try {
-          await addNoteToKnowledgeBase(
-            settings.ima.clientId,
-            settings.ima.apiKey,
-            settings.sync.defaultKnowledgeBase,
-            noteId,
-            title,
-          );
-        } catch (e) {
-          if (__DEV__) console.warn(`[Export IMA] 添加到知识库失败:`, e);
-        }
-      }
+      // 第2步：把 Markdown 内容直接 PUT 到 COS（HMAC-SHA1 签名）
+      await uploadToCos(cosCredential, content, contentType);
+
+      // 第3步：关联到个人知识库（直接进知识库，不经过笔记通道）
+      await addKnowledgeToKb(
+        settings.ima.clientId,
+        settings.ima.apiKey,
+        defaultKb,
+        mediaId,
+        title,
+        mediaType,
+      );
 
       created++;
       lastTitle = book.title;

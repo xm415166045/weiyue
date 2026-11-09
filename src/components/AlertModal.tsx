@@ -7,7 +7,7 @@ import { colors } from '../theme/colors';
 import React from 'react';
 import {
   View, Text, TouchableOpacity, Modal,
-  StyleSheet,
+  ScrollView, StyleSheet, useWindowDimensions,
 } from 'react-native';
 
 interface AlertButton {
@@ -28,6 +28,9 @@ interface AlertModalProps {
 export default function AlertModal({
   visible, title, message, buttons = [{ text: '好的' }], onClose,
 }: AlertModalProps) {
+  const { width, height } = useWindowDimensions();
+  const boxWidth = Math.min(270, width * 0.8);
+
   const handlePress = (btn: AlertButton) => {
     if (btn.onPress) btn.onPress();
     onClose?.();
@@ -42,12 +45,12 @@ export default function AlertModal({
           <View style={styles.backdrop} />
         </TouchableOpacity>
 
-        <View style={styles.alertBox}>
-          {/* 内容区 */}
-          <View style={styles.content}>
+        <View style={[styles.alertBox, { width: boxWidth, maxHeight: height * 0.8 }]}>
+          {/* 内容区：横屏高度受限时可滚动 */}
+          <ScrollView contentContainerStyle={styles.content} bounces={false}>
             <Text style={styles.title}>{title}</Text>
             <Text style={styles.message}>{message}</Text>
-          </View>
+          </ScrollView>
 
           {/* 按钮区 */}
           <View style={styles.divider} />
@@ -102,7 +105,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.overlay,
   },
   alertBox: {
-    width: 270,
     backgroundColor: '#FFF',
     borderRadius: 16,
     overflow: 'hidden',

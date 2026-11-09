@@ -18,7 +18,11 @@ function maskedSecret(value: string): string {
 }
 import { validateApiKey, importFromWeRead, WeReadAuthError, ImportProgress } from '../services/weread-api';
 import { fetchKnowledgeBases, validateImaCredentials } from '../services/ima-api';
-import type { AppSettings, KnowledgeBase } from '../types';
+import {
+  getSyncMeta, saveSyncMeta, clearDeletedTombstones,
+  getDeletedBookIds, getDeletedNoteIds,
+} from '../services/sync-meta';
+import type { AppSettings, KnowledgeBase, ImportMode } from '../types';
 
 export default function SettingsScreen(_props: any) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -100,75 +104,107 @@ export default function SettingsScreen(_props: any) {
     await saveSettings(updated);
   };
 
-  /** 从微信读书导入书架和笔记 */
-  const handleImport = async () => {
+  /** API Key 基本校验 */
+  const checkApiKey = (): boolean => {
     if (!settings?.weread.apiKey) {
       showAlert('提示', '请先填写微信读书 API Key（wrk- 开头）', [{ text: '好的' }]);
-      return;
+      return false;
     }
     if (!settings.weread.apiKey.startsWith('wrk-')) {
       showAlert('提示', 'API Key 格式错误，需要 wrk- 开头', [{ text: '好的' }]);
-      return;
+      return false;
     }
+    return true;
+  };
 
+  /** 默认入口：增量同步 */
+  const handleImport = () => {
+    if (!checkApiKey()) return;
     showAlert(
-      '从微信读书导入',
-      '将导入微信读书书架中的所有书籍和笔记，已有书籍不会重复导入。是否继续？',
+      '从微信读书同步',
+      '默认增量同步：只拉取新增或有新笔记的书籍，其余直接复用本地数据。\n本地手动删除的内容不会被自动拉回。',
       [
         { text: '取消', style: 'cancel' },
-        { text: '开始导入', style: 'default', onPress: () => doImport() },
+        { text: '开始同步', onPress: () => doImport('incremental') },
       ]
     );
   };
 
-  const doImport = async () => {
+  /** 次要入口：强制全量重导（以远端为准，清空墓碑） */
+  const handleFullImport = () => {
+    if (!checkApiKey()) return;
+    showAlert(
+      '强制全量重导',
+      '将重新拉取所有书籍与笔记，完全以微信读书为准。\n\n注意：本地手动删除的书和笔记会被恢复，远端已移除的内容会被清除。耗时较长。',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '开始重导', style: 'destructive', onPress: () => doImport('full') },
+      ]
+    );
+  };
+
+  const doImport = async (mode: ImportMode) => {
     setImporting(true);
-    setImportProgress({ phase: 'auth', message: '验证登录状态...', current: 0, total: 3 });
+    setImportProgress({ phase: 'auth', message: '准备同步...', current: 0, total: 3 });
 
     try {
       const currentSettings = await getSettings();
-      const result = await importFromWeRead(currentSettings, (progress) => {
-        setImportProgress(progress);
-      });
+      const [localBooks, localNotes, syncMeta, deletedBookIds, deletedNoteIds] = await Promise.all([
+        getBooks(), getNotes(), getSyncMeta(), getDeletedBookIds(), getDeletedNoteIds(),
+      ]);
 
-      // 导入即全量替换（对齐书迹：每次导入都是完整同步）
+      const result = await importFromWeRead(
+        currentSettings,
+        (progress) => setImportProgress(progress),
+        { mode, localBooks, localNotes, syncMeta, deletedBookIds, deletedNoteIds },
+      );
+
       await saveBooks(result.books);
       await saveNotes(result.notes);
+      await saveSyncMeta(result.syncMeta);
+      if (mode === 'full') await clearDeletedTombstones();
 
-      const totalNotesImported = result.notes.length;
       const failedBooks = result.bookResults.filter(r => !r.success);
 
       // 收集所有 API 错误
-      const allApiErrors = new Map<string, number>(); // api → count
+      const allApiErrors = new Map<string, number>();
       for (const fb of failedBooks) {
         for (const err of fb.errors) {
           allApiErrors.set(err.error, (allApiErrors.get(err.error) || 0) + 1);
         }
       }
 
-      // 构建详细的导入摘要
-      let summary = `共导入 ${result.books.length} 本书`;
-      if (totalNotesImported > 0) {
-        summary += `\n获取 ${totalNotesImported} 条笔记`;
+      // 导入摘要：增量结果为主，保留原有的错误诊断
+      const s = result.summary;
+      let summary = `共 ${result.books.length} 本书 / ${result.notes.length} 条笔记`;
+      summary += `\n\n新增 ${s.addedBooks} 本 · 更新 ${s.updatedBooks} 本 · 跳过 ${s.skippedBooks} 本`;
+      if (s.failedBooks > 0) {
+        summary += `\n失败 ${s.failedBooks} 本（保留旧数据，下次自动重试）`;
       }
+      if (s.removedFromRemote > 0) {
+        summary += `\n远端已移除 ${s.removedFromRemote} 本，已保留在本地`;
+      }
+      if (result.skippedDeletedBookIds.length > 0) {
+        summary += `\n跳过 ${result.skippedDeletedBookIds.length} 本本地已删除的书籍`;
+      }
+      if (mode === 'full') {
+        summary += '\n\n已按远端重置本地数据，删除墓碑已清空';
+      }
+
       if (failedBooks.length > 0) {
         summary += `\n\n⚠️ ${failedBooks.length} 本书笔记获取异常：`;
-        // 显示前 3 本失败的书籍详情
         for (const fb of failedBooks.slice(0, 3)) {
           const apiErrors = fb.errors.map(e => e.error).join(' | ');
           summary += `\n• 《${fb.title}》：${apiErrors || '未知错误'}`;
         }
-        if (failedBooks.length > 3) {
-          summary += `\n• ...等 ${failedBooks.length} 本`;
-        }
-        // 集中展示 API 错误类型及频次
+        if (failedBooks.length > 3) summary += `\n• ...等 ${failedBooks.length} 本`;
         if (allApiErrors.size > 0) {
           summary += `\n\n🔍 错误类型统计：`;
           for (const [err, count] of allApiErrors) {
             summary += `\n  ${err}（${count} 次）`;
           }
         }
-      } else if (totalNotesImported === 0 && result.books.length > 0) {
+      } else if (result.notes.length === 0 && result.books.length > 0) {
         summary += `\n\n⚠️ 所有书籍均未获取到笔记内容`;
         summary += `\n可能原因：`;
         summary += `\n1. 这些书确实没有划线和想法`;
@@ -182,16 +218,15 @@ export default function SettingsScreen(_props: any) {
       const savedNotes = await getNotes();
       if (__DEV__) console.log(`[Import] 验证: 存储中有 ${savedBooks.length} 本书, ${savedNotes.length} 条笔记`);
 
-      if (result.books.length === 0 && totalNotesImported === 0) {
-        summary = '没有找到有笔记的书籍。\n\n可能原因：\n1. 书架为空\n2. 所有书籍已导入\n3. 微信读书中没有划线或想法';
+      if (result.books.length === 0 && result.notes.length === 0) {
+        summary = '没有找到有笔记的书籍。\n\n可能原因：\n1. 书架为空\n2. 微信读书中没有划线或想法';
       }
 
-      // 如果获取到笔记但保存后验证为 0，说明存储有问题
-      if (totalNotesImported > 0 && savedNotes.length === 0) {
-        summary += `\n\n⚠️ 严重：获取了 ${totalNotesImported} 条笔记，但保存后验证为 0 条 — 存储模块可能存在问题`;
+      if (result.notes.length > 0 && savedNotes.length === 0) {
+        summary += `\n\n⚠️ 严重：获取了 ${result.notes.length} 条笔记，但保存后验证为 0 条 — 存储模块可能存在问题`;
       }
 
-      showAlert('导入结果', summary, [{ text: '好的' }]);
+      showAlert('同步结果', summary, [{ text: '好的' }]);
 
       // 刷新统计数据
       try {
@@ -207,7 +242,7 @@ export default function SettingsScreen(_props: any) {
           [{ text: '确定' }]
         );
       } else {
-        showAlert('导入失败', e.message || '未知错误，请重试', [{ text: '好的' }]);
+        showAlert('同步失败', e.message || '未知错误，请重试', [{ text: '好的' }]);
       }
     } finally {
       setImporting(false);
@@ -360,16 +395,24 @@ export default function SettingsScreen(_props: any) {
             {importing ? (
               <ActivityIndicator size="small" color="#FFF" />
             ) : (
-              <Text style={styles.primaryBtnText}>从微信读书导入</Text>
+              <Text style={styles.primaryBtnText}>增量同步</Text>
             )}
           </TouchableOpacity>
           <Text style={styles.primaryBtnHint}>
             {!settings.weread.apiKey
-              ? '请先配置 API Key 后再导入'
+              ? '请先配置 API Key 后再同步'
               : importing
                 ? (importProgress?.message || '准备中...')
-                : '将书架与笔记完整同步到本地'}
+                : '只拉取新增或有变化的书籍，跳过未变化的书'}
           </Text>
+          <TouchableOpacity
+            style={[styles.fullReimportBtn, (!settings.weread.apiKey || importing) && styles.fullReimportBtnDisabled]}
+            onPress={handleFullImport}
+            disabled={!settings.weread.apiKey || importing}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.fullReimportBtnText}>强制全量重导</Text>
+          </TouchableOpacity>
         </View>
 
         {/* ==================== ima 连接凭证 ==================== */}
@@ -604,7 +647,7 @@ const styles = StyleSheet.create({
 
   // ─── 导航栏 ───
   navBar: {
-    height: 44, backgroundColor: '#FFF',
+    height: 38, backgroundColor: '#FFF',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, borderBottomWidth: 0.5, borderBottomColor: colors.border,
   },
@@ -669,6 +712,14 @@ const styles = StyleSheet.create({
     fontSize: 12, color: colors.textSecondary, textAlign: 'center',
     marginHorizontal: 16, marginTop: 8, marginBottom: 14,
   },
+  fullReimportBtn: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: 12,
+    backgroundColor: colors.surface,
+    marginHorizontal: 16, marginBottom: 14,
+    height: 40, justifyContent: 'center', alignItems: 'center',
+  },
+  fullReimportBtnDisabled: { opacity: 0.5 },
+  fullReimportBtnText: { color: colors.textSecondary, fontSize: 14, fontWeight: '500' },
 
   // ─── 输入框 ───
   inputSection: { paddingHorizontal: 16, paddingVertical: 10 },

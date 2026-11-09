@@ -6,7 +6,7 @@ import { colors } from '../theme/colors';
 import React from 'react';
 import {
   View, Text, TouchableOpacity, Modal,
-  StyleSheet, ActivityIndicator,
+  ScrollView, StyleSheet, ActivityIndicator, useWindowDimensions,
 } from 'react-native';
 
 export interface ExportOption {
@@ -29,13 +29,17 @@ interface ExportSheetProps {
 export default function ExportSheet({
   visible, title, options, exporting, exportFormat, onSelect, onClose,
 }: ExportSheetProps) {
+  const { height } = useWindowDimensions();
+  // 横屏可用高度骤减，限制面板高度并让选项区可滚动
+  const sheetMaxHeight = height * 0.82;
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose}>
         <View style={styles.backdrop} />
       </TouchableOpacity>
 
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { maxHeight: sheetMaxHeight }]}>
         {/* 标题栏 — 取消在右侧，与全选对齐 */}
         <View style={styles.header}>
           <View style={styles.handleBar} />
@@ -59,9 +63,10 @@ export default function ExportSheet({
             </View>
           </View>
         ) : (
-          /* 选项列表 */
-          <View style={styles.optionsList}>
-            {options.map((opt, i) => (
+          /* 选项列表：横屏高度受限时可滚动 */
+          <ScrollView bounces={false} style={{ flexGrow: 0 }}>
+            <View style={styles.optionsList}>
+              {options.map((opt, i) => (
               <React.Fragment key={opt.key}>
                 {i > 0 && <View style={styles.divider} />}
                 <TouchableOpacity
@@ -79,8 +84,9 @@ export default function ExportSheet({
                   <Text style={styles.optionArrow}>›</Text>
                 </TouchableOpacity>
               </React.Fragment>
-            ))}
-          </View>
+              ))}
+            </View>
+          </ScrollView>
         )}
       </View>
     </Modal>

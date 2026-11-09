@@ -119,3 +119,36 @@ export interface AppSettings {
 export type SortField = 'date' | 'name' | 'author';
 export type StatsPeriod = 'week' | 'month' | 'year' | 'all';
 export type BookFilter = ReadingStatus | 'all';
+
+// ====== 增量同步 ======
+
+export type ImportMode = 'incremental' | 'full';
+
+/** /user/notebooks 返回的原始计数，用于构造「这本书是否有变化」的远端签名 */
+export interface RemoteBookCounts {
+  reviewCount: number;
+  noteCount: number;
+  bookmarkCount: number;
+  sort: number;
+}
+
+export interface BookSyncMeta {
+  remoteSignature: string;
+  localNoteCount: number;
+  lastSyncAt: string;
+}
+
+export interface SyncMeta {
+  version: 1;
+  books: Record<string, BookSyncMeta>;
+  lastFullSyncAt?: string;
+}
+
+export interface ImportSummary {
+  addedBooks: number;
+  updatedBooks: number;
+  skippedBooks: number;
+  failedBooks: number;
+  /** 远端已不再返回、但按保守策略保留在本地的书籍数 */
+  removedFromRemote: number;
+}

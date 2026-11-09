@@ -4,7 +4,12 @@
  * 认证方式：Authorization: Bearer wrk-xxxxxxxx
  * 文档：weread-skills skill (skill_2057443495761997824)
  */
-import { Book, Note, AppSettings, WeReadStats, ReadStatsMode, CategoryPref, ReadLongestBook, ReadStatItem } from '../types';
+import {
+  Book, Note, AppSettings, WeReadStats, ReadStatsMode,
+  CategoryPref, ReadLongestBook, ReadStatItem,
+  ImportMode, SyncMeta, ImportSummary,
+} from '../types';
+import { buildRemoteSignature, makeBookSyncMeta } from './sync-meta';
 
 const GATEWAY = 'https://i.weread.qq.com/api/agent/gateway';
 const SKILL_VERSION = '1.0.5';
@@ -109,7 +114,17 @@ export async function validateApiKey(apiKey: string): Promise<boolean> {
  * 与 /shelf/sync 的区别：notebooks 只返回有划线/想法的书，
  * 天然过滤掉无笔记的书籍，且自带各类型笔记数量。
  */
-export async function fetchNotebookBooksAsShelf(apiKey: string): Promise<Book[]> {
+export interface NotebookEntry {
+  book: Book;
+  /** 远端原始计数构造的签名；与 Book.noteCount 的展示值无关 */
+  signature: string;
+}
+
+/**
+ * 拉取 /user/notebooks 并保留每本书的远端签名（供增量同步比对）。
+ * 与 /shelf/sync 的字段合并逻辑保持不变。
+ */
+export async function fetchNotebookEntries(apiKey: string): Promise<NotebookEntry[]> {
   const allBooks: any[] = [];
   let lastSort: number | undefined;
   let hasMore = 1;
@@ -188,19 +203,32 @@ export async function fetchNotebookBooksAsShelf(apiKey: string): Promise<Book[]>
     const lastReadDate = shelf?.readUpdateTime ? tsToDateStr(Number(shelf.readUpdateTime)) : '';
 
     return {
-      id: `wr_${b.bookId}`,
-      title: b.title || '',
-      author: b.author || '',
-      coverUrl: b.cover || getCoverFallback(b.bookId),
-      status,
-      noteCount: (b.reviewCount || 0) + (b.noteCount || 0) + (b.bookmarkCount || 0),
-      rating: 0,
-      readingTime,
-      lastReadDate,
-      createdAt: now,
-      updatedAt: now,
+      book: {
+        id: `wr_${b.bookId}`,
+        title: b.title || '',
+        author: b.author || '',
+        coverUrl: b.cover || getCoverFallback(b.bookId),
+        status,
+        noteCount: (b.reviewCount || 0) + (b.noteCount || 0) + (b.bookmarkCount || 0),
+        rating: 0,
+        readingTime,
+        lastReadDate,
+        createdAt: now,
+        updatedAt: now,
+      },
+      signature: buildRemoteSignature({
+        reviewCount: b.reviewCount || 0,
+        noteCount: b.noteCount || 0,
+        bookmarkCount: b.bookmarkCount || 0,
+        sort: b.sort || 0,
+      }),
     };
   });
+}
+
+/** 兼容旧调用：只返回 Book[]（签名见 fetchNotebookEntries） */
+export async function fetchNotebookBooksAsShelf(apiKey: string): Promise<Book[]> {
+  return (await fetchNotebookEntries(apiKey)).map(e => e.book);
 }
 
 /**
@@ -414,6 +442,8 @@ export interface ImportProgress {
   message: string;
   current: number;
   total: number;
+  /** 本次增量同步跳过的书籍数 */
+  skipped?: number;
 }
 
 /** 单本书导入结果 */
@@ -424,19 +454,62 @@ export interface BookImportResult {
   notebookNoteCount: number; // /user/notebooks 报告的数量
   success: boolean;          // 笔记是否成功获取
   errors: { api: string; error: string }[];  // 各 API 具体错误
+  status?: 'added' | 'updated' | 'skipped' | 'failed';
+}
+
+/** 增量导入的本地上下文，由调用方（SettingsScreen）一次性读入后传入 */
+export interface ImportOptions {
+  mode?: ImportMode;
+  localBooks?: Book[];
+  localNotes?: Note[];
+  syncMeta?: SyncMeta | null;
+  deletedBookIds?: string[];
+  deletedNoteIds?: string[];
+}
+
+export interface ImportResult {
+  books: Book[];
+  notes: Note[];
+  bookResults: BookImportResult[];
+  summary: ImportSummary;
+  /** 本次产生的同步基线，调用方负责落盘 */
+  syncMeta: SyncMeta;
+  /** 因本地墓碑而跳过的远端书籍 id */
+  skippedDeletedBookIds: string[];
+}
+
+/** 按 id 去重并按创建时间升序，保证增量合并结果稳定 */
+function dedupeNotes(notes: Note[]): Note[] {
+  const map = new Map<string, Note>();
+  for (const n of notes) {
+    if (!map.has(n.id)) map.set(n.id, n);
+  }
+  return Array.from(map.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 /**
- * 完整导入流程（对齐书迹：直接用 /user/notebooks 获取有笔记的书）
+ * 导入流程（默认增量）：
  * 1. 验证 API Key
- * 2. 获取笔记本列表（只含划线/想法的书）
- * 3. 逐本获取笔记内容
+ * 2. 获取笔记本列表（含每本书的远端签名）
+ * 3. 签名比对：仅对新增 / 变化的书调用 fetchBookNotes，其余复用本地笔记
+ * 4. 合并书籍与笔记，返回新的同步基线
+ *
+ * 保守策略：本地手动删除的书 / 笔记不会在增量同步中复活；远端已移除的书保留在本地。
+ * 强制全量（mode='full'）以远端为准，忽略并清空墓碑。
  */
 export async function importFromWeRead(
   settings: AppSettings,
   onProgress: (progress: ImportProgress) => void,
-): Promise<{ books: Book[]; notes: Note[]; bookResults: BookImportResult[] }> {
+  options: ImportOptions = {},
+): Promise<ImportResult> {
   const apiKey = settings.weread.apiKey;
+  const mode: ImportMode = options.mode ?? 'incremental';
+  const localBooks = options.localBooks ?? [];
+  const localNotes = options.localNotes ?? [];
+  const prevMeta: SyncMeta = options.syncMeta ?? { version: 1, books: {} };
+  const deletedBooks = new Set(options.deletedBookIds ?? []);
+  const deletedNotes = new Set(options.deletedNoteIds ?? []);
+  const now = new Date().toISOString();
 
   if (!apiKey || !apiKey.startsWith('wrk-')) {
     throw new WeReadAuthError('请先在设置中配置有效的微信读书 API Key（wrk- 开头）');
@@ -449,57 +522,189 @@ export async function importFromWeRead(
     throw new WeReadAuthError('API Key 无效或已过期，请重新获取');
   }
 
-  // Phase 2: 获取笔记本（有笔记的书籍 — 对齐书迹，不需要满书架）
+  // Phase 2: 获取笔记本与远端签名
   onProgress({ phase: 'shelf', message: '获取笔记本列表...', current: 1, total: 3 });
-  const books = await fetchNotebookBooksAsShelf(apiKey);
+  const entries = await fetchNotebookEntries(apiKey);
 
-  if (books.length === 0) {
-    onProgress({ phase: 'done', message: '没有有笔记的书籍', current: 3, total: 3 });
-    return { books: [], notes: [], bookResults: [] };
+  // 安全兜底：远端返回空且本地有数据时不清空本地（防止接口临时异常导致数据全丢）
+  if (entries.length === 0 && mode === 'incremental' && localBooks.length > 0) {
+    onProgress({ phase: 'done', message: '远端未返回书籍，已保留本地数据', current: 3, total: 3 });
+    return {
+      books: localBooks,
+      notes: localNotes,
+      bookResults: [],
+      summary: {
+        addedBooks: 0, updatedBooks: 0, skippedBooks: 0, failedBooks: 0,
+        removedFromRemote: localBooks.length,
+      },
+      syncMeta: prevMeta,
+      skippedDeletedBookIds: [],
+    };
   }
 
-  // Phase 3: 逐本获取笔记内容
-  const allNotes: Note[] = [];
+  const activeEntries = mode === 'incremental'
+    ? entries.filter(e => !deletedBooks.has(e.book.id))
+    : entries;
+  const skippedDeletedBookIds = entries
+    .filter(e => deletedBooks.has(e.book.id))
+    .map(e => e.book.id);
+
+  const localBookById = new Map(localBooks.map(b => [b.id, b]));
+  const localNotesByBook = new Map<string, Note[]>();
+  for (const n of localNotes) {
+    if (!localNotesByBook.has(n.bookId)) localNotesByBook.set(n.bookId, []);
+    localNotesByBook.get(n.bookId)!.push(n);
+  }
+
+  const remoteIds = new Set(activeEntries.map(e => e.book.id));
+  // 远端已移除的书：增量模式保留本地，不自动删除（全量模式以远端为准）
+  const keptBooks = mode === 'incremental'
+    ? localBooks.filter(b => !remoteIds.has(b.id))
+    : [];
+
+  const nextMeta: SyncMeta = {
+    version: 1,
+    books: mode === 'full' ? {} : { ...prevMeta.books },
+    lastFullSyncAt: mode === 'full' ? now : prevMeta.lastFullSyncAt,
+  };
+
+  const needFetch = (e: NotebookEntry): boolean =>
+    mode === 'full' ||
+    !prevMeta.books[e.book.id] ||
+    prevMeta.books[e.book.id].remoteSignature !== e.signature ||
+    !localBookById.has(e.book.id);
+
+  const toFetch = activeEntries.filter(needFetch);
+  const skipped = activeEntries.filter(e => !needFetch(e));
+
+  const summary: ImportSummary = {
+    addedBooks: 0,
+    updatedBooks: 0,
+    skippedBooks: 0,
+    failedBooks: 0,
+    removedFromRemote: keptBooks.length,
+  };
   const bookResults: BookImportResult[] = [];
-  for (let i = 0; i < books.length; i++) {
-    const book = books[i];
+  const notesByBook = new Map<string, Note[]>();
+  for (const b of keptBooks) {
+    notesByBook.set(b.id, dedupeNotes(localNotesByBook.get(b.id) ?? []));
+  }
+
+  // Phase 3: 只对新增 / 变化的书拉取笔记
+  onProgress({
+    phase: 'notes',
+    message: `检查 ${activeEntries.length} 本 → 需更新 ${toFetch.length} 本`,
+    current: 0,
+    total: toFetch.length || 1,
+    skipped: skipped.length,
+  });
+
+  for (let i = 0; i < toFetch.length; i++) {
+    const entry = toFetch[i];
     onProgress({
       phase: 'notes',
-      message: `获取笔记 (${i + 1}/${books.length}): ${book.title}`,
+      message: `同步笔记 (${i + 1}/${toFetch.length}): ${entry.book.title}`,
       current: i + 1,
-      total: books.length,
+      total: toFetch.length,
+      skipped: skipped.length,
     });
 
-    const notebookNoteCount = book.noteCount; // 保存 notebook 报告的原始数量
+    const rawBookId = entry.book.id.replace(/^wr_/, '').replace(/^wr_album_/, '');
+    const notebookNoteCount = entry.book.noteCount;
+    const oldNotes = localNotesByBook.get(entry.book.id) ?? [];
+
     try {
-      const rawBookId = book.id.replace(/^wr_/, '').replace(/^wr_album_/, '');
-      const { notes: bookNotes, errors: fetchErrors } = await fetchBookNotes(apiKey, rawBookId);
-      // 创建笔记副本，避免修改 fetchBookNotes 返回的数组
-      const notesWithBookId = bookNotes.map(n => ({ ...n, bookId: book.id }));
-      allNotes.push(...notesWithBookId);
-      book.noteCount = notesWithBookId.length;
+      const { notes: fetched, errors } = await fetchBookNotes(apiKey, rawBookId);
+
+      // 任一子 API 失败都视为失败：保留旧笔记、不更新签名，下次自动重试
+      if (errors.length > 0) {
+        notesByBook.set(entry.book.id, dedupeNotes(oldNotes));
+        bookResults.push({
+          bookId: entry.book.id, title: entry.book.title,
+          noteCount: oldNotes.length, notebookNoteCount,
+          success: false, errors, status: 'failed',
+        });
+        summary.failedBooks++;
+        continue;
+      }
+
+      const merged = dedupeNotes(
+        fetched
+          .map(n => ({ ...n, bookId: entry.book.id }))
+          .filter(n => mode === 'full' || !deletedNotes.has(n.id)),
+      );
+      notesByBook.set(entry.book.id, merged);
+      nextMeta.books[entry.book.id] = makeBookSyncMeta(entry.signature, merged.length, now);
+
+      const existed = localBookById.has(entry.book.id);
       bookResults.push({
-        bookId: book.id, title: book.title, noteCount: notesWithBookId.length,
-        notebookNoteCount, success: fetchErrors.length === 0, errors: fetchErrors,
+        bookId: entry.book.id, title: entry.book.title,
+        noteCount: merged.length, notebookNoteCount,
+        success: true, errors: [],
+        status: existed ? 'updated' : 'added',
       });
+      if (existed) summary.updatedBooks++;
+      else summary.addedBooks++;
     } catch (e: any) {
-      book.noteCount = 0;
+      notesByBook.set(entry.book.id, dedupeNotes(oldNotes));
       bookResults.push({
-        bookId: book.id, title: book.title, noteCount: 0,
-        notebookNoteCount, success: false,
+        bookId: entry.book.id, title: entry.book.title,
+        noteCount: oldNotes.length, notebookNoteCount,
+        success: false, status: 'failed',
         errors: [{ api: 'fetchBookNotes', error: e.message || '未知错误' }],
       });
+      summary.failedBooks++;
     }
   }
 
+  // 签名未变化的书：复用本地笔记（仍过滤本地删除墓碑）
+  for (const e of skipped) {
+    const existing = dedupeNotes(
+      (localNotesByBook.get(e.book.id) ?? [])
+        .filter(n => mode === 'full' || !deletedNotes.has(n.id)),
+    );
+    notesByBook.set(e.book.id, existing);
+    bookResults.push({
+      bookId: e.book.id, title: e.book.title,
+      noteCount: existing.length, notebookNoteCount: e.book.noteCount,
+      success: true, errors: [], status: 'skipped',
+    });
+    summary.skippedBooks++;
+  }
+
+  // 合并书籍：远端字段更新，本地的 createdAt / rating 保留
+  const mergedBooks: Book[] = activeEntries.map(e => {
+    const local = localBookById.get(e.book.id);
+    return {
+      ...e.book,
+      createdAt: local?.createdAt ?? e.book.createdAt,
+      rating: local?.rating ?? e.book.rating,
+      noteCount: (notesByBook.get(e.book.id) ?? []).length,
+      updatedAt: now,
+    };
+  });
+  mergedBooks.push(...keptBooks);
+
+  const allNotes = Array.from(notesByBook.values())
+    .flat()
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
   onProgress({
     phase: 'done',
-    message: `导入完成: ${books.length} 本书, ${allNotes.length} 条笔记`,
-    current: books.length,
-    total: books.length,
+    message: `同步完成: 新增 ${summary.addedBooks} / 更新 ${summary.updatedBooks} / 跳过 ${summary.skippedBooks}`,
+    current: toFetch.length,
+    total: toFetch.length || 1,
+    skipped: summary.skippedBooks,
   });
 
-  return { books, notes: allNotes, bookResults };
+  return {
+    books: mergedBooks,
+    notes: allNotes,
+    bookResults,
+    summary,
+    syncMeta: nextMeta,
+    skippedDeletedBookIds,
+  };
 }
 
 // ====== 阅读统计 ======

@@ -369,7 +369,7 @@ export default function BookNotesScreen({ route, navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAFAFA' },
   navBar: {
-    height: 44, backgroundColor: '#FAFAFA',
+    height: 38, backgroundColor: '#FAFAFA',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, borderBottomWidth: 0.5, borderBottomColor: '#E8E8E8',
   },

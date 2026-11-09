@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Book, Note, AppSettings, ReadingStats, MonthlyData } from '../types';
+import { markBooksDeleted, markNotesDeleted } from './sync-meta';
 
 const KEYS = {
   BOOKS: '@weread_books',
@@ -60,6 +61,34 @@ function bookChunkKey(index: number): string {
 }
 
 /**
+ * 计算字符串的 UTF-8 字节数。
+ * 不依赖 Blob / TextEncoder —— Hermes 对二者的支持随 RN 版本变化，
+ * 纯 JS 实现在 Android / iOS / Web 三端行为一致。
+ */
+function utf8ByteLength(s: string): number {
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4; // 代理对 → 4 字节
+        i++;
+      } else {
+        bytes += 3; // 孤立高位代理
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/**
  * 按序列化后字节大小将数组分片
  */
 function chunkBySize<T>(items: T[], maxBytes: number): T[][] {
@@ -69,9 +98,7 @@ function chunkBySize<T>(items: T[], maxBytes: number): T[][] {
 
   for (const item of items) {
     const itemJson = JSON.stringify(item);
-    const itemSize = itemJson.length; // JS string length ≈ UTF-16 chars; for ASCII this ≈ bytes
-    // 更精确：计算 UTF-8 字节数
-    const itemBytes = new Blob([itemJson]).size;
+    const itemBytes = utf8ByteLength(itemJson);
     const commaSize = current.length > 0 ? 1 : 0;
     const projectedSize = currentSize + commaSize + itemBytes;
 
@@ -220,6 +247,14 @@ export async function deleteBooks(ids: string[]): Promise<void> {
     // 先保存笔记（依赖数据），再保存书籍，确保失败时至少不会留下孤儿笔记
     await saveNotes(newNotes);
     await saveBooks(newBooks);
+
+    // 记录删除墓碑：增量同步时不再把用户手动删掉的书自动拉回。
+    // 墓碑写入失败不阻断删除本身，仅告警。
+    try {
+      await markBooksDeleted(ids);
+    } catch (e) {
+      console.warn('[Storage] 写入书籍删除墓碑失败:', e);
+    }
   } catch (e) {
     console.error('[Storage] deleteBooks 失败，数据可能未一致:', e);
     throw new Error('删除书籍失败：数据未完全更新，请重试');
@@ -374,6 +409,11 @@ export async function deleteNotes(ids: string[]): Promise<void> {
   try {
     const notes = await getNotes();
     await saveNotes(notes.filter(n => !ids.includes(n.id)));
+    try {
+      await markNotesDeleted(ids);
+    } catch (e) {
+      console.warn('[Storage] 写入笔记删除墓碑失败:', e);
+    }
   } catch (e) {
     console.error('[Storage] 删除笔记失败:', e);
     throw new Error('删除笔记失败');

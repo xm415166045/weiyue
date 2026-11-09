@@ -2,7 +2,7 @@ import { colors } from '../theme/colors';
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator,
-  Image, Dimensions,
+  Image, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -45,8 +45,10 @@ export default function StatsScreen(_props: any) {
   const [coverCache, setCoverCache] = useState<Map<string, string>>(new Map());
   const [failedCovers, setFailedCovers] = useState<Set<string>>(new Set());
   const insets = useSafeAreaInsets();
-  const screenWidth = Dimensions.get('window').width;
-  const cardWidth = (screenWidth - 16 * 2 - 8 * 2) / 3;
+  const { width: windowWidth } = useWindowDimensions();
+  const contentWidth = windowWidth - insets.left - insets.right;
+  const metricColumns = contentWidth >= 700 ? 6 : contentWidth >= 520 ? 4 : 3;
+  const cardWidth = (contentWidth - 16 * 2 - 8 * (metricColumns - 1)) / metricColumns;
 
   const loadStats = useCallback(async (m: ReadStatsMode, baseTime?: number) => {
     setLoading(true);
@@ -198,7 +200,11 @@ export default function StatsScreen(_props: any) {
   const hourMax = useMemo(() => Math.max(...hourDistribution, 1), [hourDistribution]);
 
   return (
-    <View style={[S.container, { paddingTop: insets.top }]}>
+    <View style={[S.container, {
+      paddingTop: insets.top,
+      paddingLeft: insets.left,
+      paddingRight: insets.right,
+    }]}>
       <View style={S.navBar}>
         <View style={{ width: 44 }} />
         <Text style={S.navTitle}>读书统计</Text>
@@ -212,19 +218,19 @@ export default function StatsScreen(_props: any) {
             <Text style={S.statsTitle}>阅读概览</Text>
             <View style={S.statsGrid}>
               <View style={S.statItem}>
-                <Text style={S.statValue}>{summaryStats.totalBooks}</Text>
+                <StatValue value={summaryStats.totalBooks} />
                 <Text style={S.statLabel}>书籍</Text>
               </View>
               <View style={S.statItem}>
-                <Text style={S.statValue}>{summaryStats.totalNotes}</Text>
+                <StatValue value={summaryStats.totalNotes} />
                 <Text style={S.statLabel}>笔记</Text>
               </View>
               <View style={S.statItem}>
-                <Text style={S.statValue}>{Math.floor(summaryStats.totalReadingTime / 60)}h</Text>
+                <StatValue value={Math.floor(summaryStats.totalReadingTime / 60) + 'h'} />
                 <Text style={S.statLabel}>阅读</Text>
               </View>
               <View style={S.statItem}>
-                <Text style={S.statValue}>{summaryStats.finishedBooks}</Text>
+                <StatValue value={summaryStats.finishedBooks} />
                 <Text style={S.statLabel}>已完</Text>
               </View>
             </View>
@@ -319,17 +325,19 @@ export default function StatsScreen(_props: any) {
                 label: '日均时长',
               });
 
-              // 按每行 3 个切块
+              // 按当前宽度分档决定每行卡片数
               const rows: React.ReactNode[] = [];
-              for (let i = 0; i < items.length; i += 3) {
-                const rowItems = items.slice(i, i + 3);
-                const isLastRow = i + 3 >= items.length;
-                const rowJustify = rowItems.length === 3 ? 'space-between' as const : 'flex-start' as const;
+              for (let i = 0; i < items.length; i += metricColumns) {
+                const rowItems = items.slice(i, i + metricColumns);
+                const isLastRow = i + metricColumns >= items.length;
+                const rowJustify = rowItems.length === metricColumns
+                  ? 'space-between' as const
+                  : 'flex-start' as const;
                 rows.push(
                   <View key={`row-${i}`} style={{
                     flexDirection: 'row',
                     justifyContent: rowJustify,
-                    gap: isLastRow && rowItems.length < 3 ? 8 : 0,
+                    gap: isLastRow && rowItems.length < metricColumns ? 8 : 0,
                     marginBottom: 8,
                   }}>
                     {rowItems.map(item => (
@@ -422,6 +430,22 @@ export default function StatsScreen(_props: any) {
 
 const CARD = { backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginHorizontal: 16, marginBottom: 12 };
 
+/**
+ * 概览数值：位数多时自动缩小字号，保证永远单行不换行
+ * （如「10911 笔记」在窄卡片里曾折成两行，撑高整张卡片）。
+ */
+const StatValue: React.FC<{ value: number | string }> = ({ value }) => (
+  <Text
+    style={S.statValue}
+    numberOfLines={1}
+    adjustsFontSizeToFit
+    minimumFontScale={0.55}
+    allowFontScaling={false}
+  >
+    {value}
+  </Text>
+);
+
 const S = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   loadingContainer: { paddingTop: 100, alignItems: 'center' },
@@ -431,7 +455,7 @@ const S = StyleSheet.create({
   retryBtn: { backgroundColor: colors.primary, paddingHorizontal: 24, paddingVertical: 10, borderRadius: 12 },
   retryText: { color: '#FFF', fontSize: 15, fontWeight: '600' },
   navBar: {
-    height: 44, backgroundColor: '#FFF',
+    height: 38, backgroundColor: '#FFF',
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, borderBottomWidth: 0.5, borderBottomColor: colors.border,
   },
@@ -450,7 +474,7 @@ const S = StyleSheet.create({
     flex: 1, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.12)',
     borderRadius: 8, paddingVertical: 12, paddingHorizontal: 4,
   },
-  statValue: { fontSize: 22, fontWeight: '700', color: '#FFF' },
+  statValue: { fontSize: 22, fontWeight: '700', color: '#FFF', textAlign: 'center' },
   statLabel: { fontSize: 11, color: 'rgba(255,255,255,0.8)', marginTop: 4 },
 
   // Mode tabs
