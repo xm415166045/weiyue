@@ -6,6 +6,16 @@
 
 ---
 
+## 下载
+
+**[下载最新安装包 yuewei-v2.0.37.apk](https://gitee.com/marcello2026/yuewei/releases/download/v2.0.37/yuewei-v2.0.37.apk)** · [全部版本](https://gitee.com/marcello2026/yuewei/releases)
+
+- 架构 `arm64-v8a` + `x86_64`，覆盖主流真机与模拟器
+- Android 7.0 及以上
+- debug 签名，仅供内测与个人使用，不能上架应用商店
+
+---
+
 ## 功能
 
 **书架**
