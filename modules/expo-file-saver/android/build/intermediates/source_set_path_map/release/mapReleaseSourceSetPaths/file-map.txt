@@ -1,7 +1,0 @@
-expo.modules.filesaver.expo-file-saver-pngs-0 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/generated/res/pngs/release
-expo.modules.filesaver.expo-file-saver-resValues-1 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/generated/res/resValues/release
-expo.modules.filesaver.expo-file-saver-mergeReleaseResources-2 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/incremental/release/mergeReleaseResources/merged.dir
-expo.modules.filesaver.expo-file-saver-mergeReleaseResources-3 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/incremental/release/mergeReleaseResources/stripped.dir
-expo.modules.filesaver.expo-file-saver-release-4 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/build/intermediates/merged_res/release/mergeReleaseResources
-expo.modules.filesaver.expo-file-saver-main-5 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/src/main/res
-expo.modules.filesaver.expo-file-saver-release-6 /Users/marcello/Documents/开发/0-微阅/extracted/weread-notes/modules/expo-file-saver/android/src/release/res
