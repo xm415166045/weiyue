@@ -65,3 +65,8 @@ Thumbs.db
 
 # 临时备份
 *.orig.*
+
+# AI 编码助手配置与个人文档（不入库）
+.cheat/
+.claude/
+CLAUDE.md

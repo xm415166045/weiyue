@@ -8,7 +8,12 @@
 
 ## 下载
 
-**[下载最新安装包 weiyue-v2.0.38.apk](https://gitee.com/marcello2026/weiyue/releases/download/v2.0.38/weiyue-v2.0.38.apk)** · [全部版本](https://gitee.com/marcello2026/weiyue/releases)
+最新版本 **v2.0.38**，两个平台同步发布：
+
+| 平台 | 直接下载 | 全部版本 |
+|---|---|---|
+| GitHub | [weiyue-v2.0.38.apk](https://github.com/xm415166045/weiyue/releases/download/v2.0.38/weiyue-v2.0.38.apk) | [Releases](https://github.com/xm415166045/weiyue/releases) |
+| Gitee | [weiyue-v2.0.38.apk](https://gitee.com/marcello2026/weiyue/releases/download/v2.0.38/weiyue-v2.0.38.apk) | [Releases](https://gitee.com/marcello2026/weiyue/releases) |
 
 - 架构 `arm64-v8a` + `x86_64`，覆盖主流真机与模拟器
 - Android 7.0 及以上
