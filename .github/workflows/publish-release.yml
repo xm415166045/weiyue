@@ -1,0 +1,58 @@
+name: Publish Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check whether release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v2.0.39 --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout staging branch with APK
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: release-assets-v2.0.39
+
+      - name: Create release and upload APK
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'EOF'
+          ## 微阅 v2.0.39
+
+          修复微信读书接入失效问题。
+
+          ### 修复
+          - `skill_version` 从 1.0.5 升级到 1.0.6，对齐官方 2026-11-17 规范
+          - `upgrade_info` 改为非阻塞通知，不再误判为「API Key 无效或已过期」
+          - 新增 `-2010` / `-2013` 负错误码鉴权映射
+          - 设置页更新 Key 获取指南与错误提示
+
+          ### 校验
+          - 实测 Key 有效：书架 265 本、笔记 10929 条
+          - 全链路接口通过：书架 / 划线 / 书评 / 阅读统计
+
+          > 签名仍为 debug.keystore，仅供内测。
+          EOF
+          gh release create v2.0.39 ./weiyue-v2.0.39.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "微阅 v2.0.39" \
+            --notes-file /tmp/release-notes.md
