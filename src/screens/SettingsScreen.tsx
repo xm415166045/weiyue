@@ -16,7 +16,10 @@ function maskedSecret(value: string): string {
   if (value.length <= 8) return '****';
   return value.slice(0, 4) + '****' + value.slice(-4);
 }
-import { validateApiKey, importFromWeRead, WeReadAuthError, ImportProgress } from '../services/weread-api';
+import {
+  validateApiKey, importFromWeRead, WeReadAuthError, ImportProgress,
+  consumeUpgradeNotice,
+} from '../services/weread-api';
 import { fetchKnowledgeBases, validateImaCredentials } from '../services/ima-api';
 import {
   getSyncMeta, saveSyncMeta, clearDeletedTombstones,
@@ -84,7 +87,9 @@ export default function SettingsScreen(_props: any) {
       setApiKeyStatus(isValid ? 'valid' : 'invalid');
       showAlert(
         isValid ? '验证成功' : '验证失败',
-        isValid ? '微信读书 API Key 有效，可以正常导入' : 'API Key 无效或已过期，请重新获取',
+        isValid
+          ? '微信读书 API Key 有效，可以正常导入'
+          : 'API Key 无效或账号未识别。请到 weread.qq.com/r/weread-skills 重新生成后粘贴',
         [{ text: '好的' }],
       );
     } catch (e: any) {
@@ -226,6 +231,9 @@ export default function SettingsScreen(_props: any) {
         summary += `\n\n⚠️ 严重：获取了 ${result.notes.length} 条笔记，但保存后验证为 0 条 — 存储模块可能存在问题`;
       }
 
+      const upgradeTip = consumeUpgradeNotice();
+      if (upgradeTip) summary += `\n\nℹ️ Skill 升级提示：${upgradeTip}`;
+
       showAlert('同步结果', summary, [{ text: '好的' }]);
 
       // 刷新统计数据
@@ -237,8 +245,8 @@ export default function SettingsScreen(_props: any) {
     } catch (e: any) {
       if (e instanceof WeReadAuthError) {
         showAlert(
-          '登录已过期',
-          '微信读书 API Key 无效或已过期，请重新获取',
+          '鉴权失败',
+          `${e.message}\n\n请到 weread.qq.com/r/weread-skills 重新生成 API Key 后重试`,
           [{ text: '确定' }]
         );
       } else {
@@ -413,6 +421,24 @@ export default function SettingsScreen(_props: any) {
           >
             <Text style={styles.fullReimportBtnText}>强制全量重导</Text>
           </TouchableOpacity>
+
+          <View style={styles.separator} />
+          <View style={styles.guideBlock}>
+            <Text style={styles.guideTitle}>如何获取 API Key</Text>
+            <View style={styles.guideStepRow}>
+              <Text style={styles.guideNum}>1</Text>
+              <Text style={styles.guideStep}>电脑浏览器打开 weread.qq.com/r/weread-skills</Text>
+            </View>
+            <View style={styles.guideStepRow}>
+              <Text style={styles.guideNum}>2</Text>
+              <Text style={styles.guideStep}>点「登录微信读书」，用微信扫码</Text>
+            </View>
+            <View style={styles.guideStepRow}>
+              <Text style={styles.guideNum}>3</Text>
+              <Text style={styles.guideStep}>复制 wrk- 开头的 Key，粘贴到上方并点「验证」</Text>
+            </View>
+            <Text style={styles.guideFootnote}>Key 绑定账号，失效后须回官方页重新生成</Text>
+          </View>
         </View>
 
         {/* ==================== ima 连接凭证 ==================== */}
@@ -749,6 +775,7 @@ const styles = StyleSheet.create({
   guideStep: {
     flex: 1, fontSize: 13, color: colors.textPrimary, lineHeight: 20,
   },
+  guideFootnote: { fontSize: 11, color: colors.textSecondary, marginTop: 6 },
 
   // ─── 知识库列表 ───
   kbList: {},

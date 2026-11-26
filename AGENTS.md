@@ -36,6 +36,13 @@
 - 远端返回空列表时，增量模式必须保留本地数据，不能清空。
 - 某本书笔记拉取失败时不要更新其签名、保留旧笔记，下次自动重试。
 
+## 微信读书接入（2026-11-24 更新）
+
+- `weread-api.ts` 的 `SKILL_VERSION` 必须与官方 `SKILL.md` 顶部 `version` 对齐（当前 **1.0.6**，2026-11-17 发布）。官方发版后这里是硬编码，不会自动更新。
+- **关键坑**：`skill_version=1.0.5` 时，网关在**完全正常的业务回包**里附带 `upgrade_info`（latest 1.0.6 / current 1.0.5）。旧代码收到就 `throw`，而 `validateApiKey` 把非鉴权异常吞掉返回 `false`，UI 于是误报「API Key 无效或已过期」——实际 Key 有效。v1.0.6 起 `upgrade_info` 是**非阻塞**通知：当次数据照常使用，禁止中断/重试。
+- 网关鉴权用**负业务码**：`-2013` 鉴权失败、`-2010` 用户不存在、`-2003` 参数格式错误；401/403 只是兼容保留。`callAPI` 已把 `-2010`/`-2013` 映射为 `WeReadAuthError`。
+- Key 的获取与重置入口：`weread.qq.com/r/weread-skills`，扫码登录后可复制 `wrk-` Key。端到端排查时只在内存中使用，不打印明文、不落盘。
+
 ## 横屏（2026-11-09 新增）
 
 - `app.json` 的 `orientation` 为 `default`（Expo 56 合法值，no lock）；尺寸一律用 `useWindowDimensions()`，**禁止模块级 `Dimensions.get('window')` 常量**。

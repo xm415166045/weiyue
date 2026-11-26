@@ -12,7 +12,16 @@ import {
 import { buildRemoteSignature, makeBookSyncMeta } from './sync-meta';
 
 const GATEWAY = 'https://i.weread.qq.com/api/agent/gateway';
-const SKILL_VERSION = '1.0.5';
+/** 对齐官方 weread-skills v1.0.6（2026-11-17）；旧版本会被服务端下发 upgrade_info */
+const SKILL_VERSION = '1.0.6';
+
+/** 服务端下发的非阻塞升级提示（v1.0.6 语义），供 UI 在同步完成后展示 */
+let upgradeNotice = '';
+export function consumeUpgradeNotice(): string {
+  const msg = upgradeNotice;
+  upgradeNotice = '';
+  return msg;
+}
 
 // ====== 通用请求 ======
 
@@ -64,17 +73,23 @@ async function callAPI(
 
   if (__DEV__) console.log(`[WeRead API] 返回: ${apiName}`, JSON.stringify(data).slice(0, 500));
 
-  // 检查升级提示（必须优先处理）
+  // v1.0.6 起 upgrade_info 为非阻塞通知：当次业务数据仍然有效，不得中断请求
   if (data.upgrade_info) {
-    throw new Error(`需要更新 skill：${data.upgrade_info.message}`);
+    const msg = typeof data.upgrade_info.message === 'string'
+      ? data.upgrade_info.message
+      : '微信读书 Skill 有新版本可用';
+    upgradeNotice = msg;
+    if (__DEV__) console.info(`[WeRead API] 非阻塞升级提示: ${msg}`);
   }
 
-  // 检查业务错误
+  // 检查业务错误。网关使用负业务码：-2010 用户不存在 / -2013 鉴权失败；401/403 为兼容保留
   if (data.errcode && data.errcode !== 0) {
-    if (data.errcode === 401 || data.errcode === 403) {
-      throw new WeReadAuthError(data.errmsg || 'API Key 无效或已过期');
+    const code = data.errcode;
+    const errmsg = data.errmsg || `微信读书错误 (code: ${code})`;
+    if (code === 401 || code === 403 || code === -2010 || code === -2013) {
+      throw new WeReadAuthError(errmsg);
     }
-    throw new Error(data.errmsg || `微信读书错误 (code: ${data.errcode})`);
+    throw new Error(errmsg);
   }
 
   return data;
@@ -101,8 +116,8 @@ export async function validateApiKey(apiKey: string): Promise<boolean> {
     return true;
   } catch (e: unknown) {
     if (e instanceof WeReadAuthError) return false;
-    // 网络错误或其他异常均返回 false，由调用方根据错误类型处理
-    return false;
+    // 网络 / 超时等非鉴权错误原样抛出，避免被误报成「Key 无效」
+    throw e;
   }
 }
 

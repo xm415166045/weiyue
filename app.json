@@ -2,7 +2,7 @@
   "expo": {
     "name": "微阅",
     "slug": "weiyue",
-    "version": "2.0.38",
+    "version": "2.0.39",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -27,7 +27,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.weiyue.app",
-      "versionCode": 66
+      "versionCode": 67
     },
     "web": {
       "favicon": "./assets/favicon.png"
