@@ -8,9 +8,9 @@
 
 ## 下载
 
-最新版本 **v2.0.38**：
+最新版本 **v2.0.39**：
 
-**[下载 weiyue-v2.0.38.apk](https://github.com/xm415166045/weiyue/releases/download/v2.0.38/weiyue-v2.0.38.apk)** · [全部版本](https://github.com/xm415166045/weiyue/releases)
+**[下载 weiyue-v2.0.39.apk](https://github.com/xm415166045/weiyue/releases/download/v2.0.39/weiyue-v2.0.39.apk)** · [全部版本](https://github.com/xm415166045/weiyue/releases)
 
 - 架构 `arm64-v8a` + `x86_64`，覆盖主流真机与模拟器
 - Android 7.0 及以上
@@ -118,7 +118,7 @@ npm run typecheck  # 类型检查
 
 ## 版本
 
-当前 `2.0.38`（versionCode 66）。
+当前 `2.0.39`（versionCode 67）。
 
 ## License
 
